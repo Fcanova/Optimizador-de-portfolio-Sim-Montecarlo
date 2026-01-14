@@ -7,9 +7,7 @@ import seaborn as sns
 from pypfopt.efficient_frontier import EfficientFrontier
 from scipy.stats import t as t_dist
 
-# =========================================================
-# CAPÍTULO 1: DATA LIVE
-# =========================================================
+# --- CAPÍTULO 1: DATA ---
 def obtener_risk_free_live():
     try:
         tnx = yf.Ticker("^TNX")
@@ -18,14 +16,14 @@ def obtener_risk_free_live():
     except:
         return 0.042
 
-# =========================================================
-# CAPÍTULO 2: MOTOR DE SIMULACIÓN (RESTABLECIDO)
-# =========================================================
+# --- CAPÍTULO 2: MOTOR DE SIMULACIÓN (LÓGICA ORIGINAL DE TU COLAB) ---
 def generar_simulacion_profesional(returns_h, n_sims, dist_type):
     n_assets = returns_h.shape[1]
+    # Estas son las métricas que tu Colab ya tiene calculadas correctamente
     mu_vec = returns_h.mean().values * 252
     sigma_annual = returns_h.cov().values * 252
 
+    # Parámetros de tiempo
     T_years = len(returns_h) / 252
     N_steps = int(T_years * 252)
     dt = 1 / 252
@@ -53,20 +51,18 @@ def generar_simulacion_profesional(returns_h, n_sims, dist_type):
         S[t] = S[t-1] * np.exp(incr.T)
 
     final_returns = S[-1] - 1
-    # Fórmulas originales de anualización para métricas precisas
-    mu_sim_annual = (1 + final_returns.mean(axis=0))**(1/T_years) - 1
-    cov_sim_annual = np.cov(final_returns, rowvar=False) * (1/T_years)
+    
+    # IMPORTANTE: Devolvemos mu_vec y sigma_annual ORIGINALES 
+    # para que el optimizador no se vuelva loco con la dispersión del Monte Carlo
+    return mu_vec, sigma_annual, final_returns
 
-    return mu_sim_annual, cov_sim_annual, final_returns
-
-# =========================================================
-# CAPÍTULO 3: OPTIMIZADOR (VaR ANUALIZADO ORIGINAL)
-# =========================================================
+# --- CAPÍTULO 3: OPTIMIZADOR ---
 def optimizar_portfolio(mu_anual, cov_anual, rf_rate, final_returns_sim, asset_names, objetivo, min_weight, T_years):
-    mu_anual = pd.Series(mu_anual, index=asset_names)
-    cov_anual = pd.DataFrame(cov_anual, index=asset_names, columns=asset_names)
+    mu_anual_s = pd.Series(mu_anual, index=asset_names)
+    cov_anual_s = pd.DataFrame(cov_anual, index=asset_names, columns=asset_names)
+    
     bounds = (min_weight if min_weight else 0.0, 1.0)
-    ef = EfficientFrontier(mu_anual, cov_anual, weight_bounds=bounds)
+    ef = EfficientFrontier(mu_anual_s, cov_anual_s, weight_bounds=bounds)
     
     try:
         if 'Sharpe' in objetivo:
@@ -75,44 +71,40 @@ def optimizar_portfolio(mu_anual, cov_anual, rf_rate, final_returns_sim, asset_n
             raw_weights = ef.min_volatility()
         weights = ef.clean_weights()
     except:
-        ef = EfficientFrontier(mu_anual, cov_anual, weight_bounds=(0, 1))
+        ef = EfficientFrontier(mu_anual_s, cov_anual_s, weight_bounds=(0, 1))
         weights = ef.min_volatility()
     
     ret_p, vol_p, sharpe_p = ef.portfolio_performance(risk_free_rate=rf_rate)
     
-    # Cálculo exacto del VaR Anualizado
+    # Cálculo del VaR basado en la riqueza final simulada
     pesos_arr = np.array(list(weights.values()))
     port_rets_totales = final_returns_sim @ pesos_arr
-    port_rets_anual = np.power(np.maximum(1 + port_rets_totales, 0.00001), 1 / T_years) - 1
+    # Anualizamos el VaR para que sea comparable
+    port_rets_anual = np.power(np.maximum(1 + port_rets_totales, 0.0001), 1 / T_years) - 1
     var_95 = np.percentile(port_rets_anual, 5)
     
     return {"pesos": weights, "retorno_esperado": ret_p, "volatilidad_esperada": vol_p, "sharpe_ratio": sharpe_p, "var_95": var_95}
 
-# =========================================================
-# CAPÍTULO 4: INTEGRADOR
-# =========================================================
+# --- CAPÍTULO 4: INTEGRADOR ---
 def ejecutar_analisis_portfolio(tickers, f_inicio, f_fin, n_simulaciones, distribucion, objetivo, min_weight):
     rf = obtener_risk_free_live()
     df = yf.download(tickers, start=f_inicio, end=f_fin)
     
     if df.empty or len(df) < 10:
-        st.error("❌ Datos insuficientes para el periodo seleccionado.")
         return None, None
     
     data = df['Adj Close'] if 'Adj Close' in df.columns else df['Close']
     returns_h = np.log(data / data.shift(1)).dropna()
     
     T_years = len(returns_h) / 252
-    if T_years < 0.01: T_years = 0.01
+    if T_years < 0.1: T_years = 0.1
 
     mu_s, cov_s, rets_f = generar_simulacion_profesional(returns_h, n_simulaciones, distribucion)
     res = optimizar_portfolio(mu_s, cov_s, rf, rets_f, returns_h.columns.tolist(), objetivo, min_weight, T_years)
     
     return res, rets_f
 
-# =========================================================
-# CAPÍTULO 5 Y 6: INTERFAZ WEB
-# =========================================================
+# --- INTERFAZ STREAMLIT ---
 st.set_page_config(page_title="Equity Optimizer Pro", layout="wide")
 st.title("🚀 financial_wealth: Portfolio Intelligence")
 
@@ -120,49 +112,35 @@ with st.sidebar:
     st.header("⚙️ Configuración")
     tickers_str = st.text_input("Tickers (coma)", "AAPL, MSFT, NVDA, GGAL, MELI, GLD")
     tickers = [t.strip().upper() for t in tickers_str.split(",")]
-    
     col1, col2 = st.columns(2)
-    with col1:
-        f_inicio = st.date_input("Inicio", value=pd.to_datetime("2021-01-01"))
-    with col2:
-        f_fin = st.date_input("Fin", value=pd.to_datetime("today"))
-        
+    with col1: f_inicio = st.date_input("Inicio", value=pd.to_datetime("2021-01-01"))
+    with col2: f_fin = st.date_input("Fin", value=pd.to_datetime("today"))
     dist_modelo = st.selectbox("Modelo", ["MBG", "T-Student", "T-Skewed"])
     obj_input = st.radio("Objetivo", ["Max Sharpe Ratio", "Min Volatility"])
     restr_w = st.checkbox("Mínimo 5% por activo", value=True)
 
 if st.button("Simular y Optimizar Portfolio"):
-    with st.spinner("Procesando 2000 escenarios de Monte Carlo..."):
-        # Restaurado a 2000 simulaciones
+    with st.spinner("Procesando..."):
         res, sims = ejecutar_analisis_portfolio(tickers, f_inicio, f_fin, 2000, dist_modelo, obj_input, 0.05 if restr_w else None)
-        
         if res:
             st.success("✅ Análisis completado")
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Retorno Esperado Anual", f"{res['retorno_esperado']:.2%}")
-            m2.metric("Volatilidad Anual", f"{res['volatilidad_esperada']:.2%}")
-            m3.metric("Ratio de Sharpe", f"{res['sharpe_ratio']:.2f}")
-            m4.metric("VaR Anualizado (95%)", f"{res['var_95']:.2%}")
+            col_m = st.columns(4)
+            col_m[0].metric("Retorno Esperado", f"{res['retorno_esperado']:.2%}")
+            col_m[1].metric("Volatilidad", f"{res['volatilidad_esperada']:.2%}")
+            col_m[2].metric("Ratio Sharpe", f"{res['sharpe_ratio']:.2f}")
+            col_m[3].metric("VaR 95% (Anual)", f"{res['var_95']:.2%}")
             
             fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+            pesos_plot = {k: v for k, v in res['pesos'].items() if v > 0}
+            ax1.pie(pesos_plot.values(), labels=pesos_plot.keys(), autopct='%1.1f%%', colors=sns.color_palette("viridis", len(pesos_plot)))
+            ax1.set_title("Ponderación Óptima")
             
-            # Torta
-            pesos_dict = {k: v for k, v in res['pesos'].items() if v > 0.001}
-            ax1.pie(pesos_dict.values(), labels=pesos_dict.keys(), autopct='%1.1f%%', startangle=140, colors=sns.color_palette("magma", len(pesos_dict)))
-            ax1.set_title("Distribución Óptima")
-            
-            # Histograma
             pesos_arr = np.array(list(res['pesos'].values()))
-            port_rets_finales = sims @ pesos_arr
-            sns.histplot(port_rets_finales, kde=True, ax=ax2, color="teal", bins=40)
-            ax2.axvline(res['var_95'], color='red', linestyle='--', label=f"VaR Anual: {res['var_95']:.2%}")
-            ax2.set_title(f"Probabilidad de Retornos - Modelo: {dist_modelo}")
-            ax2.legend()
+            port_rets = sims @ pesos_arr
+            sns.histplot(port_rets, kde=True, ax=ax2, color="blue")
+            ax2.axvline(res['var_95'], color='red', linestyle='--')
+            ax2.set_title("Histograma de Retornos (Monte Carlo)")
             st.pyplot(fig)
             
-            st.subheader("📋 Detalle de la Cartera")
-            df_pesos = pd.DataFrame.from_dict(res['pesos'], orient='index', columns=['Ponderación (%)'])
-            df_pesos['Ponderación (%)'] = (df_pesos['Ponderación (%)'] * 100).round(2)
-            st.table(df_pesos)
-
+            st.table(pd.DataFrame.from_dict(res['pesos'], orient='index', columns=['%']).multiply(100).round(2))
 
