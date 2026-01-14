@@ -150,9 +150,10 @@ if st.button("Simular y Optimizar Portfolio"):
         st.warning("⚠️ La fecha de inicio debe ser anterior a la fecha de fin.")
     else:
         with st.spinner("Ejecutando simulaciones de Monte Carlo..."):
-            res, sims = ejecutar_analisis_portfolio(tickers, f_inicio, f_fin, 2000, dist_modelo, obj_input, 0.05 if restr_w else None)
+            res, sims = ejecutar_analisis_portfolio(tickers, f_inicio, f_fin, 50, dist_modelo, obj_input, 0.05 if restr_w else None)
             
             if res:
+                st.success("Cálculos finalizados. Generando visualizaciones...")
                 # Mostrar Métricas Clave
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("Retorno Esperado Anual", f"{res['retorno_esperado']:.2%}")
