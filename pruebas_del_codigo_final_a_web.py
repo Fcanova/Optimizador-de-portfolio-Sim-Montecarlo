@@ -8,7 +8,8 @@ Original file is located at
 """
 import streamlit as st
 import pandas as pd
-
+import numpy as np
+import yfinance as yf
 
 # Commented out IPython magic to ensure Python compatibility.
 # %%writefile app.py
@@ -165,6 +166,4 @@ import pandas as pd
 #                 ax2.legend()
 #                 st.pyplot(fig)
 
-import urllib
-print("Tu Password de seguridad es:", urllib.request.urlopen('https://ipv4.icanhazip.com').read().decode('utf8').strip("\n"))
-!streamlit run app.py & npx localtunnel --port 8501
+
