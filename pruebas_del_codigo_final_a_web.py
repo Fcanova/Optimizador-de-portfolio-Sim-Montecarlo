@@ -8,7 +8,7 @@ Original file is located at
 """
 import streamlit as st
 import pandas as pd
-!pip install PyPortfolioOpt --quiet
+
 
 # Commented out IPython magic to ensure Python compatibility.
 # %%writefile app.py
