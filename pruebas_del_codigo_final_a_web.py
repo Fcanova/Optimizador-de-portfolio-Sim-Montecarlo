@@ -14,7 +14,6 @@ st.markdown("""
     <style>
     th { text-align: center !important; font-weight: bold !important; text-transform: uppercase; color: #1E88E5; }
     td { text-align: center !important; }
-    .stMetric { background-color: #f8f9fb; padding: 15px; border-radius: 10px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -31,11 +30,10 @@ def obtener_risk_free_live():
 # --- 2. MOTOR DE SIMULACIÓN (INPUT HISTÓRICO -> OUTPUT SIMULADO) ---
 def generar_simulacion_profesional(mu_h, cov_h, n_sims, dist_type):
     n_assets = len(mu_h)
-    N_steps = 252 # Un año bursátil
+    N_steps = 252
     dt = 1 / 252
     L = np.linalg.cholesky(cov_h + 1e-10 * np.eye(n_assets))
     
-    # Drift: (mu - 0.5 * sigma^2)
     drift = (mu_h - 0.5 * np.diag(cov_h)) * dt
     S = np.ones((N_steps + 1, n_sims, n_assets))
     
@@ -56,12 +54,11 @@ def generar_simulacion_profesional(mu_h, cov_h, n_sims, dist_type):
         S[t] = S[t-1] * np.exp(incr.T)
         
     final_returns = S[-1] - 1
-    # Métricas anualizadas POST-SIMULACIÓN
     mu_sim = final_returns.mean(axis=0)
     cov_sim = np.cov(final_returns, rowvar=False)
     return mu_sim, cov_sim, final_returns
 
-# --- 3. OPTIMIZADOR CON VaR DE SIMULACIÓN ---
+# --- 3. OPTIMIZADOR ---
 def optimizar_portfolio(mu_sim, cov_sim, sims_data, rf_rate, asset_names, objetivo, min_weight, capital):
     mu_s = pd.Series(mu_sim, index=asset_names)
     cov_s = pd.DataFrame(cov_sim, index=asset_names, columns=asset_names)
@@ -80,10 +77,10 @@ def optimizar_portfolio(mu_sim, cov_sim, sims_data, rf_rate, asset_names, objeti
     
     ret_p, vol_p, _ = ef.portfolio_performance(risk_free_rate=rf_rate)
     
-    # CÁLCULO DE VaR 95% DESDE LA SIMULACIÓN
+    # VaR 95% Simulado
     pesos_arr = np.array(list(weights.values()))
     portfolio_sims = sims_data @ pesos_arr
-    vaR_pct = np.percentile(portfolio_sims, 5) # Percentil 5 para 95% confianza
+    vaR_pct = np.percentile(portfolio_sims, 5)
     
     return {
         "pesos": weights, "retorno_esperado": ret_p, "volatilidad_esperada": vol_p, 
@@ -111,78 +108,100 @@ with st.sidebar:
     restr_w = st.checkbox("Mínimo 5% por activo", value=True)
 
 if st.button("Simular y Analizar"):
-    with st.spinner("Ejecutando simulación y optimizando..."):
+    with st.spinner("Procesando..."):
         rf = obtener_risk_free_live()
-        
-        # 1. Obtención de datos históricos
         raw_data = yf.download(tickers, start=f_inicio, end=f_fin)
+        
         if isinstance(raw_data.columns, pd.MultiIndex):
             data = raw_data['Adj Close'] if 'Adj Close' in raw_data.columns.levels[0] else raw_data['Close']
         else:
             data = raw_data
-        
+            
         data = data.ffill().dropna()
         log_returns = np.log(data / data.shift(1))
         
-        # Métricas históricas base (Input)
         mu_h = log_returns.mean() * 252
         cov_h = log_returns.cov() * 252
         final_tickers = log_returns.columns.tolist()
 
-        # 2. Simulación Anualizada
+        # Simulación y Optimización
         mu_sim, cov_sim, sims_data = generar_simulacion_profesional(mu_h.values, cov_h.values, n_simulaciones, dist_modelo)
-        
-        # 3. Apartado: Métricas Individuales Simuladas (Pedido del usuario)
-        st.subheader("🎯 Métricas Individuales Anualizadas (Post-Simulación)")
-        vols_sim_ind = np.sqrt(np.diag(cov_sim))
-        df_ind = pd.DataFrame({
-            "Retorno Anual Esperado": mu_sim * 100,
-            "Volatilidad Anual": vols_sim_ind * 100,
-            "Ratio de Sharpe": (mu_sim - rf) / vols_sim_ind
-        }, index=final_tickers)
-        st.table(df_ind.sort_values(by="Retorno Anual Esperado", ascending=False).style.format("{:.2f}"))
-
-        # 4. Optimización
         res = optimizar_portfolio(mu_sim, cov_sim, sims_data, rf, final_tickers, obj_input, 0.05 if restr_w else None, cap_inicial)
 
         if res:
-            st.divider()
-            st.subheader("📊 Resultados del Portfolio Optimizado")
+            st.success("✅ Análisis Completo")
+            
+            # FILA 1: MÉTRICAS
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Retorno Esperado", f"{res['retorno_esperado']:.2%}")
             m2.metric("Volatilidad Anual", f"{res['volatilidad_esperada']:.2%}")
             m3.metric("Ratio de Sharpe", f"{(res['retorno_esperado']-rf)/res['volatilidad_esperada']:.2f}")
-            m4.metric("VaR Anual 95% (Simulado)", f"{res['vaR_pct']:.2%}")
+            m4.metric("VaR 95% (Simulado)", f"{res['vaR_pct']:.2%}")
 
-            st.subheader(f"💵 Proyección Monetaria (${cap_inicial:,.0f})")
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Ganancia Esperada", f"+ ${res['ganancia_esperada_monetaria']:,.2f}")
-            c2.metric("📈 Capital Potencial", f"${res['capital_potencial']:,.2f}")
-            c3.metric("Pérdida Máxima (VaR)", f"${res['resultado_monetario_peor_caso']:,.2f}")
-            c4.metric("📉 Capital Remanente", f"${res['capital_final_peor_caso']:,.2f}")
+            # FILA 2: TABLA DE ACTIVOS SIMULADOS
+            st.subheader("🎯 Métricas Individuales Anualizadas (Post-Simulación)")
+            vols_sim_ind = np.sqrt(np.diag(cov_sim))
+            df_ind = pd.DataFrame({
+                "Retorno Anual": mu_sim * 100,
+                "Volatilidad Anual": vols_sim_ind * 100,
+                "Sharpe": (mu_sim - rf) / vols_sim_ind
+            }, index=final_tickers)
+            st.table(df_ind.sort_values(by="Retorno Anual", ascending=False).style.format("{:.2f}"))
 
             st.divider()
 
-            # TENENCIAS Y GRÁFICOS
-            col_plan, col_pie = st.columns([1.5, 1])
-            with col_plan:
-                st.subheader("📋 Plan de Inversión Sugerido")
-                df_t = pd.DataFrame.from_dict(res['pesos'], orient='index', columns=['Ponderación (%)'])
-                df_t['Ponderación (%)'] = df_t['Ponderación (%)'] * 100
-                df_t['Monto ($)'] = (df_t['Ponderación (%)'] / 100) * cap_inicial
-                st.table(df_t.sort_values(by='Monto ($)', ascending=False).style.format({'Ponderación (%)': '{:.2f}%', 'Monto ($)': '$ {:,.2f}'}))
+            # FILA 3: FRONTERA EFICIENTE (RESTAURADA)
+            st.subheader("📈 Frontera Eficiente de Markowitz")
+            col_fe, col_pie = st.columns([2, 1])
+            
+            with col_fe:
+                # Generar n nubes de puntos aleatorios para el gráfico
+                n_port = 1000
+                p_r, p_v = [], []
+                for _ in range(n_port):
+                    w = np.random.random(len(final_tickers))
+                    w /= np.sum(w)
+                    p_r.append(np.dot(w, mu_sim))
+                    p_v.append(np.sqrt(np.dot(w.T, np.dot(cov_sim, w))))
+                
+                fig_fe, ax_fe = plt.subplots(figsize=(10, 6))
+                scatter = ax_fe.scatter(p_v, p_r, c=(np.array(p_r)/np.array(p_v)), marker='o', s=10, alpha=0.4, cmap='viridis')
+                plt.colorbar(scatter, label='Ratio de Sharpe')
+                
+                # Marcar Activos Individuales
+                for i, t in enumerate(final_tickers):
+                    ax_fe.scatter(vols_sim_ind[i], mu_sim[i], color='red', marker='X', s=100)
+                    ax_fe.annotate(t, (vols_sim_ind[i], mu_sim[i]), xytext=(5,5), textcoords='offset points', fontweight='bold')
+                
+                # Marcar Portfolio Óptimo
+                ax_fe.scatter(res['volatilidad_esperada'], res['retorno_esperado'], color='gold', marker='*', s=400, edgecolor='black', label="Portfolio Seleccionado")
+                ax_fe.set_xlabel("Volatilidad Anualizada (Riesgo)")
+                ax_fe.set_ylabel("Retorno Anualizado (Esperado)")
+                ax_fe.legend()
+                st.pyplot(fig_fe)
 
             with col_pie:
-                st.write("### Composición")
+                st.write("### Composición Visual")
                 fig_pie, ax_pie = plt.subplots()
                 pesos_plot = {k: v for k, v in res['pesos'].items() if v > 0.001}
                 ax_pie.pie(pesos_plot.values(), labels=pesos_plot.keys(), autopct='%1.1f%%', startangle=140, colors=sns.color_palette("viridis", len(pesos_plot)))
                 st.pyplot(fig_pie)
 
-            st.write("### Distribución del Portfolio (VaR 95% Marcado)")
+            st.divider()
+
+            # FILA 4: TENENCIAS Y DISTRIBUCIÓN
+            st.subheader("📋 Plan de Inversión y Distribución")
+            col_t, col_h = st.columns(2)
             
-            fig_hist, ax_hist = plt.subplots(figsize=(12, 4))
-            sns.histplot(res['portfolio_sims'] * cap_inicial, kde=True, ax=ax_hist, color="#1E88E5")
-            ax_hist.axvline(res['resultado_monetario_peor_caso'], color='red', linestyle='--', label="VaR 95%")
-            ax_hist.legend()
-            st.pyplot(fig_hist)
+            with col_t:
+                df_t = pd.DataFrame.from_dict(res['pesos'], orient='index', columns=['Ponderación (%)'])
+                df_t['Ponderación (%)'] = df_t['Ponderación (%)'] * 100
+                df_t['Monto ($)'] = (df_t['Ponderación (%)'] / 100) * cap_inicial
+                st.table(df_t.sort_values(by='Monto ($)', ascending=False).style.format({'Ponderación (%)': '{:.2f}%', 'Monto ($)': '$ {:,.2f}'}))
+
+            with col_h:
+                fig_hist, ax_hist = plt.subplots()
+                sns.histplot(res['portfolio_sims'] * cap_inicial, kde=True, ax=ax_hist, color="#1E88E5")
+                ax_hist.axvline(res['resultado_monetario_peor_caso'], color='red', linestyle='--', label="VaR 95%")
+                ax_hist.set_title("Distribución de Escenarios")
+                st.pyplot(fig_hist)
