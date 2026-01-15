@@ -1,11 +1,3 @@
-Tenés toda la razón, Franco. Una frontera eficiente sin la línea que une los puntos es solo una nube de puntos. Para que se vea profesional, tenemos que trazar la curva técnica que une los portafolios óptimos para cada nivel de riesgo.
-
-Para lograr esto, vamos a iterar sobre diferentes niveles de retorno objetivo y hallar la varianza mínima para cada uno. Esto dibujará la "envolvente" superior de la nube de puntos.
-
-Aquí tenés el código final con la línea de la frontera trazada correctamente:
-
-Python
-
 import streamlit as st
 import pandas as pd
 import numpy as np
