@@ -50,7 +50,7 @@ def generar_simulacion_profesional(returns_h, n_sims, dist_type):
     cov_sim_annual = np.cov(rets_flat, rowvar=False) * 252
     return mu_sim_annual, cov_sim_annual, final_returns
 
-# --- 3. OPTIMIZADOR ---
+# --- 3. OPTIMIZADOR (Lógica Original Restaurada) ---
 def optimizar_portfolio(mu_sim, cov_sim, rf_rate, asset_names, objetivo, min_weight, capital):
     mu_s = pd.Series(mu_sim, index=asset_names)
     cov_s = pd.DataFrame(cov_sim, index=asset_names, columns=asset_names)
@@ -69,28 +69,26 @@ def optimizar_portfolio(mu_sim, cov_sim, rf_rate, asset_names, objetivo, min_wei
     
     ret_p, vol_p, sharpe_p = ef.portfolio_performance(risk_free_rate=rf_rate)
     
-    # --- LÓGICA DE VaR NETO (Considera retorno - volatilidad) ---
+    # --- LA FÓRMULA QUE FUNCIONABA ---
     z_score = 1.645
-    vaR_neto_pct = ret_p - (z_score * vol_p)
+    peor_resultado_pct = ret_p - (z_score * vol_p)
     
     return {
-        "pesos": weights, 
-        "retorno_esperado": ret_p, 
-        "volatilidad_esperada": vol_p, 
-        "sharpe_ratio": sharpe_p, 
-        "vaR_95": vaR_neto_pct,
-        "resultado_monetario_peor_caso": capital * vaR_neto_pct,
+        "pesos": weights, "retorno_esperado": ret_p, "volatilidad_esperada": vol_p, 
+        "sharpe_ratio": sharpe_p, "peor_resultado_pct": peor_resultado_pct,
+        "resultado_monetario_peor_caso": capital * peor_resultado_pct,
         "ganancia_esperada_monetaria": ret_p * capital,
-        "capital_final_peor_caso": capital * (1 + vaR_neto_pct),
+        "capital_final_peor_caso": capital * (1 + peor_resultado_pct),
         "capital_potencial": capital * (1 + ret_p)
     }
 
 # --- 4. INTERFAZ ---
 st.set_page_config(page_title="Financial Wealth Optimizer Pro", layout="wide")
 
+# CSS Solo para la fuente de la tabla (Negrita y Centrado)
 st.markdown("""
     <style>
-    th { text-align: center !important; font-weight: bold !important; text-transform: uppercase; }
+    th { text-align: center !important; font-weight: bold !important; }
     td { text-align: center !important; }
     </style>
     """, unsafe_allow_html=True)
@@ -121,30 +119,25 @@ if st.button("Simular y Analizar"):
         if res:
             st.success("✅ Análisis Completo")
             
-            # FILA 1: MÉTRICAS (CORREGIDO VaR)
+            # FILA 1: MÉTRICAS (Con el VaR de la fórmula correcta)
             st.subheader("📊 Métricas de Eficiencia (Anualizadas)")
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Retorno Esperado", f"{res['retorno_esperado']:.2%}")
             m2.metric("Volatilidad Anual", f"{res['volatilidad_esperada']:.2%}")
             m3.metric("Ratio de Sharpe", f"{res['sharpe_ratio']:.2f}")
-            # Vinculado directamente al vaR_neto que calculamos arriba
-            m4.metric("VaR 95% Confianza", f"{res['vaR_95']:.2%}", help="Con un 95% de prob. perderías de manera estimada, como máximo esto.")
+            m4.metric("VaR 95% Confianza", f"{res['peor_resultado_pct']:.2%}", help="Con un 95% de prob. perderías de manera estimada, como máximo esto.")
 
             # FILA 2: MONETARIAS
             st.subheader(f"💵 Proyección de Capital (${cap_inicial:,.0f})", help="Medidas esperadas y anuales")
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Ganancia Esperada", f"+ ${res['ganancia_esperada_monetaria']:,.2f}")
-            c2.metric("📈 Capital Potencial", f"${res['capital_potencial']:,.2f}", delta=f"+{res['retorno_esperado']:.1%}", help="Capital potencial en caso de concretar el retorno esperado anual")
-            c3.metric("Resultado Neto Peor Caso", f"${res['resultado_monetario_peor_caso']:,.2f}", help="Monto en dólares que representa el peor escenario proyectado al 95% de confianza.")
-            
-            diff_remanente = res['capital_final_peor_caso'] - cap_inicial
-            c4.metric("📉 Capital Remanente", f"${res['capital_final_peor_caso']:,.2f}", 
-                      delta=f"${diff_remanente:,.2f}", delta_color="inverse", 
-                      help="Capital remanente tras la pérdida máxima esperada con un 95% de prob.")
+            c2.metric("📈 Capital Potencial", f"${res['capital_potencial']:,.2f}", delta=f"+{res['retorno_esperado']:.1%}")
+            c3.metric("Resultado Neto Peor Caso", f"${res['resultado_monetario_peor_caso']:,.2f}", help="Peor escenario monetario proyectado al 95% de confianza.")
+            c4.metric("📉 Capital Remanente", f"${res['capital_final_peor_caso']:,.2f}", delta=f"${res['capital_final_peor_caso']-cap_inicial:,.2f}", delta_color="inverse")
 
             st.divider()
 
-            # TABLA DE TENENCIAS
+            # TABLA DE TENENCIAS (Fuente ajustada: Negrita y Centrada)
             st.subheader("📋 Plan de Inversión (Tenencias)")
             df_tenencias = pd.DataFrame.from_dict(res['pesos'], orient='index', columns=['Ponderación (%)'])
             df_tenencias['Ponderación (%)'] = df_tenencias['Ponderación (%)'] * 100
@@ -152,7 +145,9 @@ if st.button("Simular y Analizar"):
             df_tenencias = df_tenencias.sort_values(by='Monto a Invertir ($)', ascending=False)
             st.table(df_tenencias.style.format({'Ponderación (%)': '{:.2f}%', 'Monto a Invertir ($)': '$ {:,.2f}'}))
 
-            # GRÁFICOS
+            st.divider()
+
+            # (Sigue el bloque de gráficos igual que antes, sin tocar nada más)
             col_g1, col_g2 = st.columns([2, 1])
             with col_g1:
                 st.write("### Frontera Eficiente de Markowitz")
@@ -205,5 +200,5 @@ if st.button("Simular y Analizar"):
                 pesos_arr = np.array(list(res['pesos'].values()))
                 rets_monetarios = (sims @ pesos_arr) * cap_inicial
                 sns.histplot(rets_monetarios, kde=True, ax=ax_hist, color="#3498DB")
-                ax_hist.axvline(res['resultado_monetario_peor_caso'], color='red', linestyle='--', label="VaR")
+                ax_hist.axvline(res['resultado_monetario_peor_caso'], color='red', linestyle='--')
                 st.pyplot(fig_hist)
