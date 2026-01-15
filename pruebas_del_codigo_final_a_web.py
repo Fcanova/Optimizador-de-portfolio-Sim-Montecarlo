@@ -102,7 +102,7 @@ st.title("🚀 financial_wealth: Portfolio Intelligence")
 
 with st.sidebar:
     st.header("⚙️ Parámetros")
-    capital = st.number_input("Capital a Invertir ($)", min_value=100.0, value=10000.0)
+    cap_inicial = st.number_input("Capital a Invertir ($)", min_value=100.0, value=10000.0)
     tickers_str = st.text_input("Tickers", "AAPL, MSFT, NVDA, GGAL, MELI, GLD")
     tickers = [t.strip().upper() for t in tickers_str.split(",")]
     col1, col2 = st.columns(2)
@@ -114,29 +114,36 @@ with st.sidebar:
 
 if st.button("Simular y Analizar"):
     with st.spinner("Ejecutando simulación de escenarios..."):
-        res, sims = ejecutar_analisis_portfolio(tickers, f_inicio, f_fin, 2000, dist_modelo, obj_input, 0.05 if restr_w else None, capital)
+        res, sims = ejecutar_analisis_portfolio(tickers, f_inicio, f_fin, 2000, dist_modelo, obj_input, 0.05 if restr_w else None, cap_inicial)
         if res:
             st.success("✅ Análisis Completo")
             
             # FILA 1: MÉTRICAS PORCENTUALES
-            st.subheader("📊 Métricas de Eficiencia (Simuladas)")
+            st.subheader("📊 Métricas de Eficiencia (Anualizadas)")
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Retorno Esperado", f"{res['retorno_esperado']:.2%}")
-            m2.metric("Volatilidad Anual", f"{res['volatilidad_esperada']:.2%}")
-            m3.metric("Ratio de Sharpe", f"{res['sharpe_ratio']:.2f}")
-            m4.metric("Peor Resultado (95%)", f"{res['peor_resultado_pct']:.2%}")
+            m1.metric("Retorno Esperado", f"{res['retorno_esperado']:.2%}", 
+                      help="Promedio ponderado de los retornos anuales esperados según la simulación.")
+            m2.metric("Volatilidad Anual", f"{res['volatilidad_esperada']:.2%}", 
+                      help="Desviación estándar de los retornos. Mide la variabilidad o riesgo de mercado.")
+            m3.metric("Ratio de Sharpe", f"{res['sharpe_ratio']:.2f}", 
+                      help="Relación entre el exceso de retorno y la volatilidad. Cuanto más alto, mejor es la eficiencia del riesgo.")
+            m4.metric("VaR 95% Confianza", f"{res['peor_resultado_pct']:.2%}", 
+                      help="Con un 95% de probabilidad perderías de manera estimada, como máximo esto.")
 
             # FILA 2: MÉTRICAS MONETARIAS
-            st.subheader(f"💵 Proyección de Capital (${capital:,.0f})")
+            st.subheader(f"💵 Proyección de Capital (${cap_inicial:,.0f})")
             c1, c2, c3 = st.columns(3)
-            c1.metric("Ganancia Esperada", f"+ ${res['ganancia_esperada_monetaria']:,.2f}")
+            c1.metric("Ganancia Esperada", f"+ ${res['ganancia_esperada_monetaria']:,.2f}", 
+                      help="Resultado monetario estimado en un escenario central (promedio).")
             
             color_delta = "inverse" if res['resultado_monetario_peor_caso'] < 0 else "normal"
             c2.metric("Resultado Neto Peor Caso", f"${res['resultado_monetario_peor_caso']:,.2f}", 
-                      delta="Riesgo de Capital" if res['resultado_monetario_peor_caso'] < 0 else "Resiliencia", 
-                      delta_color=color_delta)
+                      delta="Pérdida Estimada" if res['resultado_monetario_peor_caso'] < 0 else "Ganancia Mínima", 
+                      delta_color=color_delta,
+                      help="Monto en dólares que representa el peor escenario proyectado al 95% de confianza.")
             
-            c3.metric("Capital Final Proyectado", f"${res['capital_final_peor_caso']:,.2f}")
+            c3.metric("Capital Remanente", f"${res['capital_final_peor_caso']:,.2f}", 
+                      help="Capital remanente en caso de que se haga la pérdida máxima esperada con un 95% de probabilidad.")
 
             # FILA 3: GRÁFICOS
             st.divider()
@@ -162,7 +169,7 @@ if st.button("Simular y Analizar"):
                 st.write("### Distribución de Resultados")
                 fig_hist, ax_hist = plt.subplots()
                 pesos_arr = np.array(list(res['pesos'].values()))
-                rets_monetarios = (sims @ pesos_arr) * capital
+                rets_monetarios = (sims @ pesos_arr) * cap_inicial
                 sns.histplot(rets_monetarios, kde=True, ax=ax_hist, color="#3498DB")
                 ax_hist.axvline(res['resultado_monetario_peor_caso'], color='red', linestyle='--')
                 st.pyplot(fig_hist)
