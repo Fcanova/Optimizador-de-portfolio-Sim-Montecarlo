@@ -76,10 +76,11 @@ def optimizar_portfolio(mu_sim, cov_sim, rf_rate, asset_names, objetivo, min_wei
         "sharpe_ratio": sharpe_p, "peor_resultado_pct": peor_resultado_pct,
         "resultado_monetario_peor_caso": capital * peor_resultado_pct,
         "ganancia_esperada_monetaria": ret_p * capital,
-        "capital_final_peor_caso": capital * (1 + peor_resultado_pct)
+        "capital_final_peor_caso": capital * (1 + peor_resultado_pct),
+        "capital_potencial": capital * (1 + ret_p)
     }
 
-# --- 5. INTERFAZ ---
+# --- 4. INTERFAZ ---
 st.set_page_config(page_title="Financial Wealth Optimizer Pro", layout="wide")
 st.title("🚀 financial_wealth: Portfolio Intelligence")
 
@@ -116,16 +117,18 @@ if st.button("Simular y Analizar"):
             m4.metric("VaR 95% Confianza", f"{res['peor_resultado_pct']:.2%}", help="Con un 95% de prob. perderías de manera estimada, como máximo esto.")
 
             # FILA 2: MÉTRICAS MONETARIAS
-            st.subheader(f"💵 Proyección de Capital (${cap_inicial:,.0f})")
-            c1, c2, c3 = st.columns(3)
+            st.subheader(f"💵 Proyección de Capital (${cap_inicial:,.0f})", help="Medidas esperadas y anuales")
+            c1, c2, c3, c4 = st.columns(4)
             c1.metric("Ganancia Esperada", f"+ ${res['ganancia_esperada_monetaria']:,.2f}", help="Resultado monetario estimado en escenario promedio.")
             
+            c2.metric("Capital Potencial", f"${res['capital_potencial']:,.2f}", help="Capital potencial en caso de concretar el retorno esperado anual")
+            
             color_delta = "inverse" if res['resultado_monetario_peor_caso'] < 0 else "normal"
-            c2.metric("Resultado Neto Peor Caso", f"${res['resultado_monetario_peor_caso']:,.2f}", 
+            c3.metric("Resultado Neto Peor Caso", f"${res['resultado_monetario_peor_caso']:,.2f}", 
                       delta="Pérdida Estimada" if res['resultado_monetario_peor_caso'] < 0 else "Ganancia Mínima", 
                       delta_color=color_delta, help="Peor escenario monetario proyectado al 95% de confianza.")
             
-            c3.metric("Capital Remanente", f"${res['capital_final_peor_caso']:,.2f}", help="Capital remanente tras la pérdida máxima esperada.")
+            c4.metric("Capital Remanente", f"${res['capital_final_peor_caso']:,.2f}", help="Capital remanente tras la pérdida máxima esperada con un 95% de prob.")
 
             st.divider()
 
