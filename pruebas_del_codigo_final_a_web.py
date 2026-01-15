@@ -33,7 +33,9 @@ def obtener_risk_free_live():
 def generar_simulacion_diaria(mu_h, cov_h, n_sims, dist_type):
     n_assets = len(mu_h)
     N_steps = 252
-    # Atacamos la matriz: cov_h viene anualizada, la pasamos a diaria para la simulación
+    
+    # Cholesky sobre la covarianza diaria
+    # Atacamos la matriz: cov_h / 252
     L = np.linalg.cholesky(cov_h/252 + 1e-8 * np.eye(n_assets))
     
     drift_diario = (mu_h / 252) 
@@ -51,8 +53,10 @@ def generar_simulacion_diaria(mu_h, cov_h, n_sims, dist_type):
             Z_raw = np.where(Y >= 0, Y / gamma, Y * gamma)
             z = (Z_raw - Z_raw.mean(axis=1, keepdims=True)) / Z_raw.std(axis=1, keepdims=True)
         
+        # Shock correlacionado: (n_assets, n_sims)
         shock = L @ z
-        retornos_diarios_sim[t] = drift_diario[:, None] + shock 
+        # Transponemos shock para que sea (n_sims, n_assets) y coincida con la matriz
+        retornos_diarios_sim[t] = drift_diario + shock.T
         
     # MÉTRICAS ANUALIZADAS: Promedio de retornos diarios -> x252
     mu_sim = retornos_diarios_sim.mean(axis=(0, 1)) * 252
@@ -81,8 +85,8 @@ def optimizar_portfolio(mu_sim, cov_sim, ret_diarios_sim, rf_rate, asset_names, 
     
     ret_p, vol_p, _ = ef.portfolio_performance(risk_free_rate=rf_rate)
     
-    # VaR 95%: Percentil 5 de los retornos acumulados finales del portfolio
-    pesos_arr = np.array(list(weights.values()))
+    # VaR 95%: Percentil 5 de los retornos acumulados finales
+    pesos_arr = np.array([weights[t] for t in asset_names])
     ret_log_acum = ret_diarios_sim.sum(axis=0) @ pesos_arr
     ret_final_pct = np.exp(ret_log_acum) - 1
     vaR_pct = np.percentile(ret_final_pct, 5)
@@ -127,8 +131,11 @@ if st.button("Simular y Analizar"):
         
         # Inputs Históricos
         mu_h = log_returns.mean() * 252
-        # Ataque a la matriz de covarianza (Ledoit-Wolf)
-        cov_h_clean = risk_models.CovarianceShrinkage(data).ledoit_wolf()
+        # Atacamos la matriz: Si falla Ledoit-Wolf por falta de scikit-learn, usamos sample_cov
+        try:
+            cov_h_clean = risk_models.CovarianceShrinkage(data).ledoit_wolf()
+        except:
+            cov_h_clean = risk_models.sample_cov(data)
         
         final_tickers = data.columns.tolist()
 
@@ -145,7 +152,7 @@ if st.button("Simular y Analizar"):
             m1.metric("Retorno Esperado", f"{res['retorno_esperado']:.2%}", help="Promedio de los retornos anualizados simulados.")
             m2.metric("Volatilidad Anual", f"{res['volatilidad_esperada']:.2%}", help="Riesgo anualizado basado en la desviación de retornos diarios.")
             m3.metric("Ratio de Sharpe", f"{(res['retorno_esperado']-rf)/res['volatilidad_esperada']:.2f}", help="Retorno excedente por unidad de riesgo.")
-            m4.metric("VaR 95% (Simulado)", f"{res['vaR_pct']:.2%}", help="Máxima pérdida esperada en el 95% de los escenarios simulados.")
+            m4.metric("VaR 95% (Anual)", f"{res['vaR_pct']:.2%}", help="Máxima pérdida esperada en el 95% de los escenarios simulados.")
 
             # FILA 2: AUDITORÍA INDIVIDUAL
             st.subheader("🎯 Eficiencia Individual Simulada (Día tras día)")
@@ -162,8 +169,8 @@ if st.button("Simular y Analizar"):
             st.subheader(f"💵 Proyección Monetaria (${cap_inicial:,.0f})")
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Ganancia Esperada", f"+ ${res['ganancia_esperada_monetaria']:,.2f}")
-            c2.metric("📈 Capital Potencial", f"${res['capital_potencial']:,.2f}", help="Capital total estimado al finalizar el año.")
-            c3.metric("Resultado Neto (VaR)", f"${res['resultado_monetario_peor_caso']:,.2f}", help="Peor resultado neto en el escenario del 95%.")
+            c2.metric("📈 Capital Potencial", f"${res['capital_potencial']:,.2f}")
+            c3.metric("Resultado Neto (VaR)", f"${res['resultado_monetario_peor_caso']:,.2f}")
             c4.metric("📉 Capital Remanente", f"${res['capital_final_peor_caso']:,.2f}", delta=f"${res['capital_final_peor_caso']-cap_inicial:,.2f}", delta_color="inverse")
 
             st.divider()
@@ -214,5 +221,4 @@ if st.button("Simular y Analizar"):
                 fig_hist, ax_hist = plt.subplots()
                 sns.histplot(res['ret_final_pct'] * cap_inicial, kde=True, ax=ax_hist, color="#1E88E5")
                 ax_hist.axvline(res['resultado_monetario_peor_caso'], color='red', linestyle='--', label="VaR 95%")
-                ax_hist.set_xlabel("Resultado Monetario ($)")
                 st.pyplot(fig_hist)
