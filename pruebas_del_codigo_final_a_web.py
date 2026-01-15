@@ -27,11 +27,10 @@ def obtener_risk_free_live():
     except:
         return 0.042
 
-# --- 2. MOTOR DE SIMULACIÓN ---
+# --- 2. MOTOR DE SIMULACIÓN (AZAR LIBERADO) ---
 def generar_simulacion_profesional(returns_h, n_sims, dist_type):
-    np.random.seed(42)
+    # Sin semilla fija para que los números se actualicen en cada simulación
     n_assets = returns_h.shape[1]
-    
     mu_daily = returns_h.mean().values
     sigma_daily = returns_h.cov().values
     
@@ -115,7 +114,7 @@ with st.sidebar:
     restr_w = st.checkbox("Mínimo 5% por activo", value=True)
 
 if st.button("Simular y Analizar"):
-    with st.spinner("Ejecutando análisis completo..."):
+    with st.spinner("Ejecutando simulación y optimización..."):
         rf = obtener_risk_free_live()
         df = yf.download(tickers, start=f_inicio, end=f_fin)
         data = df['Adj Close'] if 'Adj Close' in df.columns else df['Close']
@@ -128,25 +127,23 @@ if st.button("Simular y Analizar"):
             st.success("✅ Análisis Completo")
             
             # FILA 1: MÉTRICAS
-            st.subheader("📊 Métricas de Eficiencia (Anualizadas)")
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Retorno Esperado", f"{res['retorno_esperado']:.2%}", help="Retorno promedio anual simulado.")
-            m2.metric("Volatilidad Anual", f"{res['volatilidad_esperada']:.2%}", help="Riesgo de mercado anualizado (Desviación Estándar).")
-            m3.metric("Ratio de Sharpe", f"{(res['retorno_esperado']-rf)/res['volatilidad_esperada']:.2f}", help="Exceso de retorno por unidad de riesgo.")
-            m4.metric("VaR 95% Confianza", f"{res['vaR_pct']:.2%}", help="Peor escenario neto anual estimado (95% confianza).")
+            m2.metric("Volatilidad Anual", f"{res['volatilidad_esperada']:.2%}", help="Riesgo de mercado anualizado.")
+            m3.metric("Ratio de Sharpe", f"{(res['retorno_esperado']-rf)/res['volatilidad_esperada']:.2f}", help="Eficiencia del riesgo.")
+            m4.metric("VaR 95% Confianza", f"{res['vaR_pct']:.2%}", help="Peor escenario neto anual estimado.")
 
             # FILA 2: MONETARIAS
-            st.subheader(f"💵 Proyección de Capital (${cap_inicial:,.0f})", help="Escenarios proyectados a 1 año")
+            st.subheader(f"💵 Proyección de Capital (${cap_inicial:,.0f})")
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Ganancia Esperada", f"+ ${res['ganancia_esperada_monetaria']:,.2f}", help="Resultado monetario neto en escenario promedio.")
-            c2.metric("📈 Capital Potencial", f"${res['capital_potencial']:,.2f}", delta=f"+{res['retorno_esperado']:.1%}", help="Capital total final si se cumple el retorno esperado.")
+            c1.metric("Ganancia Esperada", f"+ ${res['ganancia_esperada_monetaria']:,.2f}")
+            c2.metric("📈 Capital Potencial", f"${res['capital_potencial']:,.2f}", delta=f"+{res['retorno_esperado']:.1%}")
             
             val_neto = res['resultado_neto_peor_caso']
-            color_c3 = "inverse" if val_neto < 0 else "normal"
-            c3.metric("Resultado Neto (VaR)", f"${val_neto:,.2f}", delta="Pérdida Máxima" if val_neto < 0 else "Ganancia Mínima", delta_color=color_c3, help="Resultado monetario neto en el peor escenario (95%).")
+            c3.metric("Resultado Neto (VaR)", f"${val_neto:,.2f}", delta="Pérdida Máxima" if val_neto < 0 else "Ganancia Mínima")
             
             diff = res['capital_final_peor_caso'] - cap_inicial
-            c4.metric("📉 Capital Remanente", f"${res['capital_final_peor_caso']:,.2f}", delta=f"${diff:,.2f}", delta_color="inverse", help="Dinero final remanente en cuenta tras el peor escenario.")
+            c4.metric("📉 Capital Remanente", f"${res['capital_final_peor_caso']:,.2f}", delta=f"${diff:,.2f}", delta_color="inverse")
 
             st.divider()
 
@@ -160,26 +157,44 @@ if st.button("Simular y Analizar"):
 
             st.divider()
 
-            # FILA 3: FRONTERA Y COMPOSICIÓN
+            # FILA 3: FRONTERA CON LÍNEA EFICIENTE
             col_g1, col_g2 = st.columns([2, 1])
             with col_g1:
                 st.write("### Frontera Eficiente de Markowitz")
-                n_port = 800
+                n_port = 1000
                 p_r, p_v = [], []
                 for _ in range(n_port):
                     w = np.random.random(len(tickers)); w /= np.sum(w)
                     p_r.append(np.dot(w, mu_sim))
                     p_v.append(np.sqrt(np.dot(w.T, np.dot(cov_sim, w))))
                 
+                # CÁLCULO DE LA LÍNEA DE LA FRONTERA
+                target_rets = np.linspace(min(mu_sim), max(mu_sim), 25)
+                frontier_v = []
+                for r in target_rets:
+                    ef_line = EfficientFrontier(pd.Series(mu_sim, index=tickers), pd.DataFrame(cov_sim, index=tickers, columns=tickers))
+                    try:
+                        ef_line.efficient_return(r)
+                        frontier_v.append(ef_line.portfolio_performance()[1])
+                    except: frontier_v.append(None)
+                
                 fig_fe, ax_fe = plt.subplots(figsize=(10, 6))
                 ax_fe.scatter(p_v, p_r, c=(np.array(p_r)/np.array(p_v)), marker='o', s=5, alpha=0.3, cmap='viridis')
+                
+                # Dibujar la línea punteada
+                valid_v = [v for v in frontier_v if v is not None]
+                valid_r = [r for v, r in zip(frontier_v, target_rets) if v is not None]
+                ax_fe.plot(valid_v, valid_r, color='black', linestyle='--', linewidth=1.5, label="Frontera Eficiente")
+                
                 v_ind = np.sqrt(np.diag(cov_sim))
-                ax_fe.scatter(v_ind, mu_sim, color='red', marker='X', s=80)
+                ax_fe.scatter(v_ind, mu_sim, color='red', marker='X', s=80, label="Activos")
                 for i, t in enumerate(tickers):
                     ax_fe.annotate(t, (v_ind[i], mu_sim[i]), xytext=(5,5), textcoords='offset points', fontweight='bold')
-                ax_fe.scatter(res['volatilidad_esperada'], res['retorno_esperado'], color='gold', marker='*', s=250, edgecolor='black', label="Tu Portfolio")
-                ax_fe.set_xlabel("Riesgo (Volatilidad)"); ax_fe.set_ylabel("Retorno Esperado")
+                
+                ax_fe.scatter(res['volatilidad_esperada'], res['retorno_esperado'], color='gold', marker='*', s=300, edgecolor='black', label="Tu Portfolio")
+                ax_fe.legend()
                 st.pyplot(fig_fe)
+                
 
             with col_g2:
                 st.write("### Composición Visual")
@@ -191,19 +206,17 @@ if st.button("Simular y Analizar"):
             # FILA 4: BARRAS E HISTOGRAMA
             col_b1, col_b2 = st.columns(2)
             with col_b1:
-                st.write("### Potencial Monetario: Esperado vs VaR")
+                st.write("### Potencial: Esperado vs Peor Caso")
                 fig_bar, ax_bar = plt.subplots()
-                vals = [res['ganancia_esperada_monetaria'], res['resultado_neto_peor_caso']]
-                ax_bar.bar(['Esperado', 'Peor Caso (VaR)'], vals, color=['#2ECC71', '#E74C3C'])
+                ax_bar.bar(['Ganancia Esp.', 'Resultado VaR'], [res['ganancia_esperada_monetaria'], res['resultado_neto_peor_caso']], color=['#2ECC71', '#E74C3C'])
                 ax_bar.axhline(0, color='black', linewidth=0.8)
                 st.pyplot(fig_bar)
             
             with col_b2:
-                st.write("### Distribución de Probabilidades (Monte Carlo)")
+                st.write("### Distribución de Probabilidades")
                 fig_hist, ax_hist = plt.subplots()
                 pesos_arr = np.array(list(res['pesos'].values()))
                 rets_monetarios = (sims @ pesos_arr) * cap_inicial
                 sns.histplot(rets_monetarios, kde=True, ax=ax_hist, color="#3498DB")
                 ax_hist.axvline(res['resultado_neto_peor_caso'], color='red', linestyle='--', label="VaR 95%")
-                ax_hist.legend()
                 st.pyplot(fig_hist)
