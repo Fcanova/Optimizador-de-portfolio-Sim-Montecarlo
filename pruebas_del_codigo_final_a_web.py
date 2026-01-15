@@ -52,15 +52,14 @@ def generar_simulacion_profesional(returns_h, n_sims, dist_type):
     final_returns = S[-1] - 1
     mu_sim_annual = (1 + final_returns.mean(axis=0))**(1/T_years) - 1
     
-    # Covarianza de los retornos diarios de la simulación
     rets_daily_sim = S[1:] / S[:-1] - 1
     rets_flat = rets_daily_sim.reshape(-1, n_assets)
     cov_sim_annual = np.cov(rets_flat, rowvar=False) * 252
 
     return mu_sim_annual, cov_sim_annual, final_returns
 
-# --- 3. OPTIMIZADOR CON VaR RELATIVO ---
-def optimizar_portfolio(mu_sim, cov_sim, rf_rate, asset_names, objetivo, min_weight):
+# --- 3. OPTIMIZADOR CON VaR RELATIVO Y MONETARIO ---
+def optimizar_portfolio(mu_sim, cov_sim, rf_rate, asset_names, objetivo, min_weight, capital):
     mu_s = pd.Series(mu_sim, index=asset_names)
     cov_s = pd.DataFrame(cov_sim, index=asset_names, columns=asset_names)
     
@@ -84,16 +83,22 @@ def optimizar_portfolio(mu_sim, cov_sim, rf_rate, asset_names, objetivo, min_wei
     z_score = 1.645
     var_95_anual = z_score * vol_p 
     
+    # --- VaR MONETARIO ---
+    var_monetario = capital * var_95_anual
+    ganancia_esperada = capital * ret_p
+    
     return {
         "pesos": weights, 
         "retorno_esperado": ret_p, 
         "volatilidad_esperada": vol_p, 
         "sharpe_ratio": sharpe_p, 
-        "var_95": var_95_anual
+        "var_95": var_95_anual,
+        "var_monetario": var_monetario,
+        "ganancia_monetaria": ganancia_esperada
     }
 
 # --- 4. INTEGRADOR ---
-def ejecutar_analisis_portfolio(tickers, f_inicio, f_fin, n_simulaciones, distribucion, objetivo, min_weight):
+def ejecutar_analisis_portfolio(tickers, f_inicio, f_fin, n_simulaciones, distribucion, objetivo, min_weight, capital):
     rf = obtener_risk_free_live()
     df = yf.download(tickers, start=f_inicio, end=f_fin)
     if df.empty or len(df) < 10: return None, None
@@ -101,15 +106,16 @@ def ejecutar_analisis_portfolio(tickers, f_inicio, f_fin, n_simulaciones, distri
     returns_h = np.log(data / data.shift(1)).dropna()
     
     mu_sim, cov_sim, rets_f = generar_simulacion_profesional(returns_h, n_simulaciones, distribucion)
-    res = optimizar_portfolio(mu_sim, cov_sim, rf, returns_h.columns.tolist(), objetivo, min_weight)
+    res = optimizar_portfolio(mu_sim, cov_sim, rf, returns_h.columns.tolist(), objetivo, min_weight, capital)
     return res, rets_f
 
-# --- 5. INTERFAZ ---
+# --- 5. INTERFAZ STREAMLIT ---
 st.set_page_config(page_title="Equity Optimizer Pro", layout="wide")
 st.title("🚀 financial_wealth: Portfolio Intelligence")
 
 with st.sidebar:
     st.header("⚙️ Configuración")
+    capital = st.number_input("Capital a Invertir ($)", min_value=1000.0, value=100000.0, step=1000.0)
     tickers_str = st.text_input("Tickers", "AAPL, MSFT, NVDA, GGAL, MELI, GLD")
     tickers = [t.strip().upper() for t in tickers_str.split(",")]
     col1, col2 = st.columns(2)
@@ -119,17 +125,28 @@ with st.sidebar:
     obj_input = st.radio("Objetivo", ["Max Sharpe Ratio", "Min Volatility"])
     restr_w = st.checkbox("Mínimo 5% por activo", value=True)
 
-if st.button("Simular y Optimizar"):
+if st.button("Simular y Optimizar Portfolio"):
     with st.spinner("Ejecutando simulación de Monte Carlo..."):
-        res, sims = ejecutar_analisis_portfolio(tickers, f_inicio, f_fin, 2000, dist_modelo, obj_input, 0.05 if restr_w else None)
+        res, sims = ejecutar_analisis_portfolio(tickers, f_inicio, f_fin, 2000, dist_modelo, obj_input, 0.05 if restr_w else None, capital)
         if res:
             st.success("✅ Análisis completado")
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Retorno Esperado (Anual)", f"{res['retorno_esperado']:.2%}")
-            m2.metric("Volatilidad (Anual)", f"{res['volatilidad_esperada']:.2%}")
-            m3.metric("Ratio de Sharpe", f"{res['sharpe_ratio']:.2f}")
-            m4.metric("VaR 95% (Relativo)", f"{res['var_95']:.2%}", help="Indica cuánto puede caer el retorno respecto al promedio esperado.")
             
+            # --- FILA 1: MÉTRICAS PORCENTUALES ---
+            st.subheader("📊 Métricas de Rendimiento y Riesgo")
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Retorno Esperado", f"{res['retorno_esperado']:.2%}")
+            m2.metric("Volatilidad Anual", f"{res['volatilidad_esperada']:.2%}")
+            m3.metric("Ratio de Sharpe", f"{res['sharpe_ratio']:.2f}")
+            m4.metric("VaR 95% (%)", f"{res['var_95']:.2%}")
+
+            # --- FILA 2: MÉTRICAS MONETARIAS ---
+            st.subheader(f"💵 Proyección para Capital de ${capital:,.0f}")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Ganancia Esperada", f"${res['ganancia_monetaria']:,.2f}")
+            c2.metric("Riesgo Máximo (VaR Monetario)", f"${res['var_monetario']:,.2f}", delta="Pérdida Potencial", delta_color="inverse")
+            c3.metric("Capital en Riesgo", f"${(capital - res['var_monetario']):,.2f}", help="Capital remanente en el peor escenario respecto a la media.")
+
+            # --- GRÁFICOS ---
             fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
             
             pesos_plot = {k: v for k, v in res['pesos'].items() if v > 0.001}
