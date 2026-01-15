@@ -35,9 +35,10 @@ def generar_simulacion_profesional(returns_h, n_sims, dist_type):
     
     N_steps = 252
     dt = 1 / 252
+    # Cholesky para mantener correlaciones entre activos
     L = np.linalg.cholesky(sigma_annual + 1e-10 * np.eye(n_assets))
     
-    # Drift ajustado por convexidad
+    # Drift ajustado por convexidad (Efecto Ito para MBG)
     drift = (mu_annual - 0.5 * np.diag(sigma_annual)) * dt
     S = np.ones((N_steps + 1, n_sims, n_assets))
     
@@ -110,96 +111,110 @@ with st.sidebar:
 if st.button("Simular y Analizar"):
     with st.spinner("Descargando y procesando datos..."):
         rf = obtener_risk_free_live()
-        data = yf.download(tickers, start=f_inicio, end=f_fin)['Adj Close']
         
-        # Alineación robusta de datos para no perder métricas de activos individuales
-        data = data.ffill().dropna()
-        returns_h = np.log(data / data.shift(1)).dropna()
-        
-        mu_sim, cov_sim, sims = generar_simulacion_profesional(returns_h, n_simulaciones, dist_modelo)
-        res = optimizar_portfolio(mu_sim, cov_sim, rf, tickers, obj_input, 0.05 if restr_w else None, cap_inicial)
-
-        if res:
-            st.success(f"✅ Análisis con {n_simulaciones} simulaciones completo")
+        # --- FIX ROBUSTO PARA YFINANCE ---
+        try:
+            raw_data = yf.download(tickers, start=f_inicio, end=f_fin, group_by='column')
             
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Retorno Esperado", f"{res['retorno_esperado']:.2%}", help="Retorno promedio anual simulado.")
-            m2.metric("Volatilidad Anual", f"{res['volatilidad_esperada']:.2%}", help="Riesgo anualizado.")
-            m3.metric("Ratio de Sharpe", f"{(res['retorno_esperado']-rf)/res['volatilidad_esperada']:.2f}")
-            m4.metric("VaR 95% Confianza", f"{res['vaR_pct']:.2%}", help="Peor escenario neto estimado (95% confianza).")
-
-            st.subheader(f"💵 Proyección de Capital (${cap_inicial:,.0f})")
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Ganancia Esperada", f"+ ${res['ganancia_esperada_monetaria']:,.2f}")
-            c2.metric("📈 Capital Potencial", f"${res['capital_potencial']:,.2f}", delta=f"+{res['retorno_esperado']:.1%}")
+            # Manejo de MultiIndex o Single Index
+            if 'Adj Close' in raw_data.columns:
+                data = raw_data['Adj Close']
+            elif isinstance(raw_data.columns, pd.MultiIndex):
+                data = raw_data.xs('Adj Close', axis=1, level=0)
+            else:
+                data = raw_data['Close'] # Fallback a Close si no hay Adj Close
+                
+            # Limpieza para no perder historia de activos como MELI
+            data = data.ffill().dropna()
             
-            v_neto = res['resultado_monetario_peor_caso']
-            c3.metric("Resultado Neto (VaR)", f"${v_neto:,.2f}", delta="Pérdida Máxima" if v_neto < 0 else "Ganancia Mínima", delta_color="inverse" if v_neto < 0 else "normal")
+            # Verificar si quedaron tickers después de la limpieza
+            tickers_finales = data.columns.tolist()
+            returns_h = np.log(data / data.shift(1)).dropna()
             
-            c4.metric("📉 Capital Remanente", f"${res['capital_final_peor_caso']:,.2f}", delta=f"${res['capital_final_peor_caso']-cap_inicial:,.2f}", delta_color="inverse")
+            mu_sim, cov_sim, sims = generar_simulacion_profesional(returns_h, n_simulaciones, dist_modelo)
+            res = optimizar_portfolio(mu_sim, cov_sim, rf, tickers_finales, obj_input, 0.05 if restr_w else None, cap_inicial)
 
-            st.divider()
-            
-            st.subheader("📋 Plan de Inversión (Tenencias)")
-            df_t = pd.DataFrame.from_dict(res['pesos'], orient='index', columns=['Ponderación (%)'])
-            df_t['Ponderación (%)'] = df_t['Ponderación (%)'] * 100
-            df_t['Monto a Invertir ($)'] = (df_t['Ponderación (%)'] / 100) * cap_inicial
-            st.table(df_t.sort_values(by='Monto a Invertir ($)', ascending=False).style.format({'Ponderación (%)': '{:.2f}%', 'Monto a Invertir ($)': '$ {:,.2f}'}))
+            if res:
+                st.success(f"✅ Análisis con {n_simulaciones} simulaciones completo")
+                
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Retorno Esperado", f"{res['retorno_esperado']:.2%}")
+                m2.metric("Volatilidad Anual", f"{res['volatilidad_esperada']:.2%}")
+                m3.metric("Ratio de Sharpe", f"{(res['retorno_esperado']-rf)/res['volatilidad_esperada']:.2f}")
+                m4.metric("VaR 95% Confianza", f"{res['vaR_pct']:.2%}")
 
-            st.divider()
+                st.subheader(f"💵 Proyección de Capital (${cap_inicial:,.0f})")
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Ganancia Esperada", f"+ ${res['ganancia_esperada_monetaria']:,.2f}")
+                c2.metric("📈 Capital Potencial", f"${res['capital_potencial']:,.2f}", delta=f"+{res['retorno_esperado']:.1%}")
+                v_neto = res['resultado_monetario_peor_caso']
+                c3.metric("Resultado Neto (VaR)", f"${v_neto:,.2f}", delta="Pérdida Máxima" if v_neto < 0 else "Ganancia Mínima", delta_color="inverse" if v_neto < 0 else "normal")
+                c4.metric("📉 Capital Remanente", f"${res['capital_final_peor_caso']:,.2f}", delta=f"${res['capital_final_peor_caso']-cap_inicial:,.2f}", delta_color="inverse")
 
-            col_g1, col_g2 = st.columns([2, 1])
-            with col_g1:
-                st.write("### Frontera Eficiente de Markowitz")
-                n_port = 800
-                p_r, p_v = [], []
-                for _ in range(n_port):
-                    w = np.random.random(len(tickers)); w /= np.sum(w)
-                    p_r.append(np.dot(w, mu_sim)); p_v.append(np.sqrt(np.dot(w.T, np.dot(cov_sim, w))))
+                st.divider()
                 
-                target_rets = np.linspace(min(mu_sim), max(mu_sim), 25)
-                frontier_v = []
-                for r in target_rets:
-                    ef_l = EfficientFrontier(pd.Series(mu_sim, index=tickers), pd.DataFrame(cov_sim, index=tickers, columns=tickers))
-                    try:
-                        ef_l.efficient_return(r)
-                        frontier_v.append(ef_l.portfolio_performance()[1])
-                    except: frontier_v.append(None)
-                
-                fig_fe, ax_fe = plt.subplots(figsize=(10, 6))
-                ax_fe.scatter(p_v, p_r, c=(np.array(p_r)/np.array(p_v)), marker='o', s=5, alpha=0.3, cmap='viridis')
-                
-                valid_v = [v for v in frontier_v if v is not None]; valid_r = [r for v, r in zip(frontier_v, target_rets) if v is not None]
-                ax_fe.plot(valid_v, valid_r, color='black', linestyle='--', linewidth=1.5, label="Frontera")
-                
-                v_ind = np.sqrt(np.diag(cov_sim))
-                ax_fe.scatter(v_ind, mu_sim, color='red', marker='X', s=80)
-                for i, t in enumerate(tickers):
-                    ax_fe.annotate(t, (v_ind[i], mu_sim[i]), xytext=(5,5), textcoords='offset points', fontweight='bold')
-                ax_fe.scatter(res['volatilidad_esperada'], res['retorno_esperado'], color='gold', marker='*', s=300, edgecolor='black', label="Portfolio")
-                ax_fe.legend(); st.pyplot(fig_fe)
+                st.subheader("📋 Plan de Inversión (Tenencias)")
+                df_t = pd.DataFrame.from_dict(res['pesos'], orient='index', columns=['Ponderación (%)'])
+                df_t['Ponderación (%)'] = df_t['Ponderación (%)'] * 100
+                df_t['Monto a Invertir ($)'] = (df_t['Ponderación (%)'] / 100) * cap_inicial
+                st.table(df_t.sort_values(by='Monto a Invertir ($)', ascending=False).style.format({'Ponderación (%)': '{:.2f}%', 'Monto a Invertir ($)': '$ {:,.2f}'}))
 
-            with col_g2:
-                st.write("### Composición Visual")
-                fig_pie, ax_pie = plt.subplots()
-                pesos_plot = {k: v for k, v in res['pesos'].items() if v > 0.001}
-                ax_pie.pie(pesos_plot.values(), labels=pesos_plot.keys(), autopct='%1.1f%%', startangle=140, colors=sns.color_palette("viridis", len(pesos_plot)))
-                st.pyplot(fig_pie)
+                st.divider()
 
-            col_b1, col_b2 = st.columns(2)
-            with col_b1:
-                st.write("### Potencial: Esperado vs Peor Caso")
-                fig_bar, ax_bar = plt.subplots()
-                ax_bar.bar(['Esperado', 'VaR 95%'], [res['ganancia_esperada_monetaria'], res['resultado_monetario_peor_caso']], color=['green', 'red'])
-                ax_bar.axhline(0, color='black', linewidth=0.8)
-                st.pyplot(fig_bar)
-            
-            with col_b2:
-                st.write("### Distribución de Resultados (Log-Normal)")
+                col_g1, col_g2 = st.columns([2, 1])
+                with col_g1:
+                    st.write("### Frontera Eficiente de Markowitz")
+                    n_port = 800
+                    p_r, p_v = [], []
+                    for _ in range(n_port):
+                        w = np.random.random(len(tickers_finales)); w /= np.sum(w)
+                        p_r.append(np.dot(w, mu_sim)); p_v.append(np.sqrt(np.dot(w.T, np.dot(cov_sim, w))))
+                    
+                    target_rets = np.linspace(min(mu_sim), max(mu_sim), 25)
+                    frontier_v = []
+                    for r in target_rets:
+                        ef_l = EfficientFrontier(pd.Series(mu_sim, index=tickers_finales), pd.DataFrame(cov_sim, index=tickers_finales, columns=tickers_finales))
+                        try:
+                            ef_l.efficient_return(r)
+                            frontier_v.append(ef_l.portfolio_performance()[1])
+                        except: frontier_v.append(None)
+                    
+                    fig_fe, ax_fe = plt.subplots(figsize=(10, 6))
+                    ax_fe.scatter(p_v, p_r, c=(np.array(p_r)/np.array(p_v)), marker='o', s=5, alpha=0.3, cmap='viridis')
+                    valid_v = [v for v in frontier_v if v is not None]; valid_r = [r for v, r in zip(frontier_v, target_rets) if v is not None]
+                    ax_fe.plot(valid_v, valid_r, color='black', linestyle='--', linewidth=1.5)
+                    
+                    v_ind = np.sqrt(np.diag(cov_sim))
+                    ax_fe.scatter(v_ind, mu_sim, color='red', marker='X', s=80)
+                    for i, t in enumerate(tickers_finales):
+                        ax_fe.annotate(t, (v_ind[i], mu_sim[i]), xytext=(5,5), textcoords='offset points', fontweight='bold')
+                    ax_fe.scatter(res['volatilidad_esperada'], res['retorno_esperado'], color='gold', marker='*', s=300, edgecolor='black')
+                    st.pyplot(fig_fe)
+
+                with col_g2:
+                    st.write("### Composición Visual")
+                    fig_pie, ax_pie = plt.subplots()
+                    pesos_plot = {k: v for k, v in res['pesos'].items() if v > 0.001}
+                    ax_pie.pie(pesos_plot.values(), labels=pesos_plot.keys(), autopct='%1.1f%%', startangle=140, colors=sns.color_palette("viridis", len(pesos_plot)))
+                    st.pyplot(fig_pie)
+
+                col_b1, col_b2 = st.columns(2)
+                with col_b1:
+                    st.write("### Potencial: Esperado vs Peor Caso")
+                    fig_bar, ax_bar = plt.subplots()
+                    ax_bar.bar(['Esperado', 'VaR 95%'], [res['ganancia_esperada_monetaria'], res['resultado_monetario_peor_caso']], color=['green', 'red'])
+                    ax_bar.axhline(0, color='black', linewidth=0.8)
+                    st.pyplot(fig_bar)
                 
-                fig_hist, ax_hist = plt.subplots()
-                pesos_arr = np.array(list(res['pesos'].values()))
-                rets_monetarios = (sims @ pesos_arr) * cap_inicial
-                sns.histplot(rets_monetarios, kde=True, ax=ax_hist, color="skyblue")
-                ax_hist.axvline(res['resultado_monetario_peor_caso'], color='red', linestyle='--')
-                st.pyplot(fig_hist)
+                with col_b2:
+                    st.write("### Distribución de Resultados (Log-Normal)")
+                    
+                    fig_hist, ax_hist = plt.subplots()
+                    pesos_arr = np.array(list(res['pesos'].values()))
+                    rets_monetarios = (sims @ pesos_arr) * cap_inicial
+                    sns.histplot(rets_monetarios, kde=True, ax=ax_hist, color="skyblue")
+                    ax_hist.axvline(res['resultado_monetario_peor_caso'], color='red', linestyle='--')
+                    st.pyplot(fig_hist)
+        except Exception as e:
+            st.error(f"Error en la descarga o proceso: {e}")
+            st.info("Intentá reduciendo el rango de fechas o revisando que los tickers sean correctos.")
