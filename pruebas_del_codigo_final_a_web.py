@@ -7,30 +7,29 @@ import seaborn as sns
 from pypfopt.efficient_frontier import EfficientFrontier
 from scipy.stats import t as t_dist
 
-# --- CAPÍTULO 1: DATA ---
+# --- 1. DATA LIVE (RISK FREE) ---
 def obtener_risk_free_live():
     try:
         tnx = yf.Ticker("^TNX")
-        rate = tnx.history(period="1d")['Close'].iloc[-1]
-        return rate / 100
+        data = tnx.history(period="1d")
+        if data.empty: return 0.042
+        return data['Close'].iloc[-1] / 100
     except:
         return 0.042
 
-# --- CAPÍTULO 2: MOTOR DE SIMULACIÓN (LÓGICA ORIGINAL DE TU COLAB) ---
+# --- 2. MOTOR DE SIMULACIÓN ---
 def generar_simulacion_profesional(returns_h, n_sims, dist_type):
     n_assets = returns_h.shape[1]
-    # Estas son las métricas que tu Colab ya tiene calculadas correctamente
-    mu_vec = returns_h.mean().values * 252
-    sigma_annual = returns_h.cov().values * 252
+    mu_h = returns_h.mean().values * 252
+    sigma_h = returns_h.cov().values * 252
 
-    # Parámetros de tiempo
     T_years = len(returns_h) / 252
     N_steps = int(T_years * 252)
     dt = 1 / 252
 
-    L = np.linalg.cholesky(sigma_annual + 1e-10 * np.eye(n_assets))
-    var_diag = np.diag(sigma_annual)
-    drift = (mu_vec - 0.5 * var_diag) * dt
+    L = np.linalg.cholesky(sigma_h + 1e-10 * np.eye(n_assets))
+    var_diag = np.diag(sigma_h)
+    drift = (mu_h - 0.5 * var_diag) * dt
 
     S = np.ones((N_steps + 1, n_sims, n_assets))
     nu, gamma = 5, 1.3
@@ -52,59 +51,67 @@ def generar_simulacion_profesional(returns_h, n_sims, dist_type):
 
     final_returns = S[-1] - 1
     
-    # IMPORTANTE: Devolvemos mu_vec y sigma_annual ORIGINALES 
-    # para que el optimizador no se vuelva loco con la dispersión del Monte Carlo
-    return mu_vec, sigma_annual, final_returns
+    # CALCULAMOS MEDIA Y COV DE LAS SIMULACIONES (Lo que pidió Franco)
+    # Anualizamos los retornos finales de las simulaciones
+    mu_sim_annual = (1 + final_returns.mean(axis=0))**(1/T_years) - 1
+    
+    # Calculamos covarianza de los retornos logarítmicos implícitos en las trayectorias
+    rets_daily_sim = S[1:] / S[:-1] - 1
+    rets_flat = rets_daily_sim.reshape(-1, n_assets)
+    cov_sim_annual = np.cov(rets_flat, rowvar=False) * 252
 
-# --- CAPÍTULO 3: OPTIMIZADOR ---
-def optimizar_portfolio(mu_anual, cov_anual, rf_rate, final_returns_sim, asset_names, objetivo, min_weight, T_years):
-    mu_anual_s = pd.Series(mu_anual, index=asset_names)
-    cov_anual_s = pd.DataFrame(cov_anual, index=asset_names, columns=asset_names)
+    return mu_sim_annual, cov_sim_annual, final_returns
+
+# --- 3. OPTIMIZADOR SOBRE DATOS SIMULADOS ---
+def optimizar_portfolio(mu_sim, cov_sim, rf_rate, final_returns_sim, asset_names, objetivo, min_weight, T_years):
+    mu_s = pd.Series(mu_sim, index=asset_names)
+    cov_s = pd.DataFrame(cov_sim, index=asset_names, columns=asset_names)
     
     bounds = (min_weight if min_weight else 0.0, 1.0)
-    ef = EfficientFrontier(mu_anual_s, cov_anual_s, weight_bounds=bounds)
+    ef = EfficientFrontier(mu_s, cov_s, weight_bounds=bounds)
     
     try:
-        if 'Sharpe' in objetivo:
-            raw_weights = ef.max_sharpe(risk_free_rate=rf_rate)
+        if "Sharpe" in objetivo:
+            ef.max_sharpe(risk_free_rate=rf_rate)
         else:
-            raw_weights = ef.min_volatility()
+            ef.min_volatility()
         weights = ef.clean_weights()
     except:
-        ef = EfficientFrontier(mu_anual_s, cov_anual_s, weight_bounds=(0, 1))
-        weights = ef.min_volatility()
+        ef = EfficientFrontier(mu_s, cov_s, weight_bounds=(0, 1))
+        ef.min_volatility()
+        weights = ef.clean_weights()
     
     ret_p, vol_p, sharpe_p = ef.portfolio_performance(risk_free_rate=rf_rate)
     
-    # Cálculo del VaR basado en la riqueza final simulada
+    # VaR 95% - Escala Anual (Positivo representa pérdida)
     pesos_arr = np.array(list(weights.values()))
-    port_rets_totales = final_returns_sim @ pesos_arr
-    # Anualizamos el VaR para que sea comparable
-    port_rets_anual = np.power(np.maximum(1 + port_rets_totales, 0.0001), 1 / T_years) - 1
-    var_95 = np.percentile(port_rets_anual, 5)
+    port_rets_sim = final_returns_sim @ pesos_arr
+    port_rets_anual = np.power(np.maximum(1 + port_rets_sim, 0.0001), 1 / T_years) - 1
+    var_95 = -np.percentile(port_rets_anual, 5) 
     
     return {"pesos": weights, "retorno_esperado": ret_p, "volatilidad_esperada": vol_p, "sharpe_ratio": sharpe_p, "var_95": var_95}
 
-# --- CAPÍTULO 4: INTEGRADOR ---
+# --- 4. INTEGRADOR ---
 def ejecutar_analisis_portfolio(tickers, f_inicio, f_fin, n_simulaciones, distribucion, objetivo, min_weight):
     rf = obtener_risk_free_live()
     df = yf.download(tickers, start=f_inicio, end=f_fin)
     
-    if df.empty or len(df) < 10:
-        return None, None
-    
+    if df.empty or len(df) < 10: return None, None
     data = df['Adj Close'] if 'Adj Close' in df.columns else df['Close']
     returns_h = np.log(data / data.shift(1)).dropna()
     
     T_years = len(returns_h) / 252
     if T_years < 0.1: T_years = 0.1
 
-    mu_s, cov_s, rets_f = generar_simulacion_profesional(returns_h, n_simulaciones, distribucion)
-    res = optimizar_portfolio(mu_s, cov_s, rf, rets_f, returns_h.columns.tolist(), objetivo, min_weight, T_years)
+    # Obtenemos métricas de la simulación
+    mu_sim, cov_sim, rets_f = generar_simulacion_profesional(returns_h, n_simulaciones, distribucion)
+    
+    # Optimizamos usando las métricas simuladas
+    res = optimizar_portfolio(mu_sim, cov_sim, rf, rets_f, returns_h.columns.tolist(), objetivo, min_weight, T_years)
     
     return res, rets_f
 
-# --- INTERFAZ STREAMLIT ---
+# --- 5. INTERFAZ STREAMLIT ---
 st.set_page_config(page_title="Equity Optimizer Pro", layout="wide")
 st.title("🚀 financial_wealth: Portfolio Intelligence")
 
@@ -120,7 +127,7 @@ with st.sidebar:
     restr_w = st.checkbox("Mínimo 5% por activo", value=True)
 
 if st.button("Simular y Optimizar Portfolio"):
-    with st.spinner("Procesando..."):
+    with st.spinner("Ejecutando simulación de Monte Carlo y optimizando..."):
         res, sims = ejecutar_analisis_portfolio(tickers, f_inicio, f_fin, 2000, dist_modelo, obj_input, 0.05 if restr_w else None)
         if res:
             st.success("✅ Análisis completado")
@@ -138,9 +145,8 @@ if st.button("Simular y Optimizar Portfolio"):
             pesos_arr = np.array(list(res['pesos'].values()))
             port_rets = sims @ pesos_arr
             sns.histplot(port_rets, kde=True, ax=ax2, color="blue")
-            ax2.axvline(res['var_95'], color='red', linestyle='--')
-            ax2.set_title("Histograma de Retornos (Monte Carlo)")
+            ax2.axvline(np.percentile(port_rets, 5), color='red', linestyle='--', label="VaR 95%")
+            ax2.set_title("Histograma de Retornos (Simulados)")
             st.pyplot(fig)
             
             st.table(pd.DataFrame.from_dict(res['pesos'], orient='index', columns=['%']).multiply(100).round(2))
-
