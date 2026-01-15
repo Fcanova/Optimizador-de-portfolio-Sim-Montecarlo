@@ -68,8 +68,10 @@ def optimizar_portfolio(mu_sim, cov_sim, rf_rate, asset_names, objetivo, min_wei
         weights = ef.clean_weights()
     
     ret_p, vol_p, sharpe_p = ef.portfolio_performance(risk_free_rate=rf_rate)
+    
+    # --- LOGICA DE VaR RECUPERADA (NETA) ---
     z_score = 1.645
-    peor_resultado_pct = ret_p - (z_score * vol_p)
+    peor_resultado_pct = ret_p - (z_score * vol_p) # Retorno amortiza la volatilidad
     
     return {
         "pesos": weights, "retorno_esperado": ret_p, "volatilidad_esperada": vol_p, 
@@ -83,17 +85,10 @@ def optimizar_portfolio(mu_sim, cov_sim, rf_rate, asset_names, objetivo, min_wei
 # --- 4. INTERFAZ ---
 st.set_page_config(page_title="Financial Wealth Optimizer Pro", layout="wide")
 
-# CSS CORREGIDO (HTML centrado y negrita)
 st.markdown("""
     <style>
-    th {
-        text-align: center !important;
-        font-weight: bold !important;
-        text-transform: uppercase;
-    }
-    td {
-        text-align: center !important;
-    }
+    th { text-align: center !important; font-weight: bold !important; text-transform: uppercase; }
+    td { text-align: center !important; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -126,15 +121,15 @@ if st.button("Simular y Analizar"):
             # FILA 1: MÉTRICAS
             st.subheader("📊 Métricas de Eficiencia (Anualizadas)")
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Retorno Esperado", f"{res['retorno_esperado']:.2%}")
-            m2.metric("Volatilidad Anual", f"{res['volatilidad_esperada']:.2%}")
-            m3.metric("Ratio de Sharpe", f"{res['sharpe_ratio']:.2f}")
+            m1.metric("Retorno Esperado", f"{res['retorno_esperado']:.2%}", help="Promedio ponderado de los retornos anuales esperados.")
+            m2.metric("Volatilidad Anual", f"{res['volatilidad_esperada']:.2%}", help="Desviación estándar de los retornos.")
+            m3.metric("Ratio de Sharpe", f"{res['sharpe_ratio']:.2f}", help="Exceso de retorno por unidad de riesgo.")
             m4.metric("VaR 95% Confianza", f"{res['peor_resultado_pct']:.2%}", help="Con un 95% de prob. perderías de manera estimada, como máximo esto.")
 
             # FILA 2: MONETARIAS
             st.subheader(f"💵 Proyección de Capital (${cap_inicial:,.0f})", help="Medidas esperadas y anuales")
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Ganancia Esperada", f"+ ${res['ganancia_esperada_monetaria']:,.2f}")
+            c1.metric("Ganancia Esperada", f"+ ${res['ganancia_esperada_monetaria']:,.2f}", help="Resultado monetario estimado en escenario promedio.")
             c2.metric("📈 Capital Potencial", f"${res['capital_potencial']:,.2f}", delta=f"+{res['retorno_esperado']:.1%}", help="Capital potencial en caso de concretar el retorno esperado anual")
             c3.metric("Resultado Neto Peor Caso", f"${res['resultado_monetario_peor_caso']:,.2f}", help="Monto en dólares que representa el peor escenario proyectado al 95% de confianza.")
             c4.metric("📉 Capital Remanente", f"${res['capital_final_peor_caso']:,.2f}", delta=f"${res['capital_final_peor_caso']-cap_inicial:,.2f}", delta_color="inverse", help="Capital remanente tras la pérdida máxima esperada con un 95% de prob.")
@@ -151,8 +146,7 @@ if st.button("Simular y Analizar"):
 
             st.divider()
 
-            # GRÁFICOS (Frontera, Torta, Barras, Histograma)
-            # ... [Se mantiene el bloque completo de gráficos de la versión anterior]
+            # GRÁFICOS
             col_g1, col_g2 = st.columns([2, 1])
             with col_g1:
                 st.write("### Frontera Eficiente de Markowitz")
