@@ -7,6 +7,24 @@ import seaborn as sns
 from pypfopt.efficient_frontier import EfficientFrontier
 from scipy.stats import t as t_dist
 
+# --- CONFIGURACIÓN DE PÁGINA Y CSS (VISUAL) ---
+st.set_page_config(page_title="Financial Wealth Optimizer Pro", layout="wide")
+
+# CSS para forzar títulos de tabla en negrita y centrados
+st.markdown("""
+    <style>
+    th {
+        text-align: center !important;
+        font-weight: bold !important;
+        font-size: 1.1rem !important;
+        text-transform: uppercase;
+    }
+    td {
+        text-align: center !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
 # --- 1. TASA LIBRE DE RIESGO ---
 def obtener_risk_free_live():
     try:
@@ -17,7 +35,7 @@ def obtener_risk_free_live():
     except:
         return 0.042
 
-# --- 2. MOTOR DE SIMULACIÓN ---
+# --- 2. MOTOR DE SIMULACIÓN (TU LÓGICA EXACTA) ---
 def generar_simulacion_profesional(returns_h, n_sims, dist_type):
     n_assets = returns_h.shape[1]
     mu_h = returns_h.mean().values * 252
@@ -50,7 +68,7 @@ def generar_simulacion_profesional(returns_h, n_sims, dist_type):
     cov_sim_annual = np.cov(rets_flat, rowvar=False) * 252
     return mu_sim_annual, cov_sim_annual, final_returns
 
-# --- 3. OPTIMIZADOR ---
+# --- 3. OPTIMIZADOR (TU LÓGICA EXACTA) ---
 def optimizar_portfolio(mu_sim, cov_sim, rf_rate, asset_names, objetivo, min_weight, capital):
     mu_s = pd.Series(mu_sim, index=asset_names)
     cov_s = pd.DataFrame(cov_sim, index=asset_names, columns=asset_names)
@@ -68,12 +86,17 @@ def optimizar_portfolio(mu_sim, cov_sim, rf_rate, asset_names, objetivo, min_wei
         weights = ef.clean_weights()
     
     ret_p, vol_p, sharpe_p = ef.portfolio_performance(risk_free_rate=rf_rate)
+    
+    # FÓRMULA ORIGINAL: Retorno - (1.645 * Volatilidad)
     z_score = 1.645
     peor_resultado_pct = ret_p - (z_score * vol_p)
     
     return {
-        "pesos": weights, "retorno_esperado": ret_p, "volatilidad_esperada": vol_p, 
-        "sharpe_ratio": sharpe_p, "peor_resultado_pct": peor_resultado_pct,
+        "pesos": weights, 
+        "retorno_esperado": ret_p, 
+        "volatilidad_esperada": vol_p, 
+        "sharpe_ratio": sharpe_p, 
+        "peor_resultado_pct": peor_resultado_pct,
         "resultado_monetario_peor_caso": capital * peor_resultado_pct,
         "ganancia_esperada_monetaria": ret_p * capital,
         "capital_final_peor_caso": capital * (1 + peor_resultado_pct),
@@ -81,22 +104,6 @@ def optimizar_portfolio(mu_sim, cov_sim, rf_rate, asset_names, objetivo, min_wei
     }
 
 # --- 4. INTERFAZ ---
-st.set_page_config(page_title="Financial Wealth Optimizer Pro", layout="wide")
-
-# CSS para centrar y poner en negrita los encabezados de la tabla
-st.markdown("""
-    <style>
-    th {
-        text-align: center !important;
-        font-weight: bold !important;
-        text-transform: uppercase;
-    }
-    td {
-        text-align: center !important;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-
 st.title("🚀 financial_wealth: Portfolio Intelligence")
 
 with st.sidebar:
@@ -123,34 +130,46 @@ if st.button("Simular y Analizar"):
         if res:
             st.success("✅ Análisis Completo")
             
-            # FILA 1: MÉTRICAS PORCENTUALES
+            # FILA 1: MÉTRICAS DE EFICIENCIA
             st.subheader("📊 Métricas de Eficiencia (Anualizadas)")
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Retorno Esperado", f"{res['retorno_esperado']:.2%}", help="Retorno promedio anual simulado.")
-            m2.metric("Volatilidad Anual", f"{res['volatilidad_esperada']:.2%}", help="Riesgo de mercado medido por desviación estándar.")
-            m3.metric("Ratio de Sharpe", f"{res['sharpe_ratio']:.2f}", help="Eficiencia del retorno por cada unidad de riesgo.")
-            m4.metric("VaR 95% Confianza", f"{res['peor_resultado_pct']:.2%}", help="Con un 95% de probabilidad perderías de manera estimada, como máximo esto.")
+            m2.metric("Volatilidad Anual", f"{res['volatilidad_esperada']:.2%}", help="Riesgo de mercado (Desviación Estándar).")
+            m3.metric("Ratio de Sharpe", f"{res['sharpe_ratio']:.2f}", help="Retorno por unidad de riesgo.")
+            # Uso exacto de tu variable original
+            m4.metric("VaR 95% Confianza", f"{res['peor_resultado_pct']:.2%}", help="Con un 95% de prob. perderías de manera estimada, como máximo esto.")
 
-            # FILA 2: MÉTRICAS MONETARIAS
+            # FILA 2: MÉTRICAS MONETARIAS (Restaurados los Helps y Emojis)
             st.subheader(f"💵 Proyección de Capital (${cap_inicial:,.0f})", help="Medidas esperadas y anuales")
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Ganancia Esperada", f"+ ${res['ganancia_esperada_monetaria']:,.2f}", help="Resultado monetario estimado en escenario promedio.")
-            c2.metric("📈 Capital Potencial", f"${res['capital_potencial']:,.2f}", delta=f"+{res['retorno_esperado']:.1%}", help="Capital potencial en caso de concretar el retorno esperado anual.")
-            c3.metric("Resultado Neto Peor Caso", f"${res['resultado_monetario_peor_caso']:,.2f}", help="Escenario proyectado al 95% de confianza.")
+            c1.metric("Ganancia Esperada", f"+ ${res['ganancia_esperada_monetaria']:,.2f}", help="Resultado monetario en escenario promedio.")
+            
+            c2.metric("📈 Capital Potencial", f"${res['capital_potencial']:,.2f}", 
+                      delta=f"+{res['retorno_esperado']:.1%}", 
+                      help="Capital potencial en caso de concretar el retorno esperado anual.")
+            
+            color_delta = "inverse" if res['resultado_monetario_peor_caso'] < 0 else "normal"
+            c3.metric("Resultado Neto Peor Caso", f"${res['resultado_monetario_peor_caso']:,.2f}", 
+                      delta=f"{res['peor_resultado_pct']:.1%} VaR", 
+                      delta_color=color_delta, 
+                      help="Monto en dólares que representa el peor escenario proyectado al 95% de confianza.")
             
             diff_remanente = res['capital_final_peor_caso'] - cap_inicial
-            c4.metric("📉 Capital Remanente", f"${res['capital_final_peor_caso']:,.2f}", delta=f"${diff_remanente:,.2f}", delta_color="inverse", help="Capital remanente tras la pérdida máxima esperada con un 95% de prob.")
+            c4.metric("📉 Capital Remanente", f"${res['capital_final_peor_caso']:,.2f}", 
+                      delta=f"${diff_remanente:,.2f}", 
+                      delta_color="inverse", 
+                      help="Capital remanente en caso de que se haga la pérdida máxima esperada con un 95% de prob.")
 
             st.divider()
 
-            # --- LISTA DE TENENCIAS DETALLADA ---
+            # --- TABLA DE TENENCIAS (ESTILO CORREGIDO) ---
             st.subheader("📋 Plan de Inversión (Tenencias)")
             df_tenencias = pd.DataFrame.from_dict(res['pesos'], orient='index', columns=['Ponderación (%)'])
             df_tenencias['Ponderación (%)'] = df_tenencias['Ponderación (%)'] * 100
             df_tenencias['Monto a Invertir ($)'] = (df_tenencias['Ponderación (%)'] / 100) * cap_inicial
             df_tenencias = df_tenencias.sort_values(by='Monto a Invertir ($)', ascending=False)
             
-            # Usar st.table para asegurar que el CSS de centrado funcione perfectamente
+            # Usamos st.table para que el CSS funcione y se vea negrita/centrado
             st.table(df_tenencias.style.format({
                 'Ponderación (%)': '{:.2f}%',
                 'Monto a Invertir ($)': '$ {:,.2f}'
@@ -158,7 +177,7 @@ if st.button("Simular y Analizar"):
 
             st.divider()
 
-            # FILA 3: FRONTERA EFICIENTE Y COMPOSICIÓN
+            # --- GRÁFICOS (TU CÓDIGO ORIGINAL) ---
             col_g1, col_g2 = st.columns([2, 1])
             with col_g1:
                 st.write("### Frontera Eficiente de Markowitz")
@@ -181,13 +200,16 @@ if st.button("Simular y Analizar"):
                 
                 fig_fe, ax_fe = plt.subplots(figsize=(10, 6))
                 ax_fe.scatter(p_vol, p_ret, c=(np.array(p_ret)/np.array(p_vol)), marker='o', s=5, alpha=0.2, cmap='viridis')
+                
                 valid_v = [v for v in frontier_vol if v is not None]
                 valid_r = [r for v, r in zip(frontier_vol, target_rets) if v is not None]
                 ax_fe.plot(valid_v, valid_r, color='black', linestyle='--', linewidth=1.5)
+                
                 vols_indiv = np.sqrt(np.diag(cov_sim))
                 ax_fe.scatter(vols_indiv, mu_sim, color='red', marker='X', s=80)
                 for i, t in enumerate(tickers):
                     ax_fe.annotate(t, (vols_indiv[i], mu_sim[i]), xytext=(5,5), textcoords='offset points', fontweight='bold')
+                
                 ax_fe.scatter(res['volatilidad_esperada'], res['retorno_esperado'], color='gold', marker='*', s=250, edgecolor='black')
                 st.pyplot(fig_fe)
 
@@ -198,7 +220,6 @@ if st.button("Simular y Analizar"):
                 ax_pie.pie(pesos_plot.values(), labels=pesos_plot.keys(), autopct='%1.1f%%', startangle=140, colors=sns.color_palette("viridis", len(pesos_plot)))
                 st.pyplot(fig_pie)
             
-            # FILA 4: BARRAS Y DISTRIBUCIÓN
             col_b1, col_b2 = st.columns(2)
             with col_b1:
                 st.write("### Potencial: Éxito vs Riesgo")
