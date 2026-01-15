@@ -8,13 +8,14 @@ from pypfopt.efficient_frontier import EfficientFrontier
 from pypfopt import risk_models, expected_returns
 from scipy.stats import t as t_dist
 
-# --- 0. CONFIGURACIÓN ---
+# --- 0. CONFIGURACIÓN Y ESTILO ---
 st.set_page_config(page_title="Financial Wealth Optimizer Pro", layout="wide")
 
 st.markdown("""
     <style>
     th { text-align: center !important; font-weight: bold !important; text-transform: uppercase; color: #1E88E5; }
     td { text-align: center !important; }
+    .main-metric { background-color: #f8f9fb; padding: 20px; border-radius: 10px; border-left: 5px solid #1E88E5; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -28,18 +29,19 @@ def obtener_risk_free_live():
     except:
         return 0.042
 
-# --- 2. MOTOR DE SIMULACIÓN DIARIA (CORREGIDO) ---
+# --- 2. MOTOR DE SIMULACIÓN PASO A PASO (DIARIA) ---
 def generar_simulacion_diaria(mu_h, cov_h, n_sims, dist_type):
     n_assets = len(mu_h)
     N_steps = 252
     dt = 1 / 252
+    
+    # Cholesky sobre la covarianza diaria para los shocks de cada paso
     L = np.linalg.cholesky(cov_h/252 + 1e-8 * np.eye(n_assets))
     
-    # Retorno diario esperado
+    # Retorno diario esperado (drift)
     drift_diario = (mu_h / 252) 
     
-    # Guardaremos los retornos diarios de cada activo en cada simulación
-    # Estructura: (Pasos, Sims, Activos)
+    # Matriz para guardar los retornos logarítmicos diarios simulados
     retornos_diarios_sim = np.zeros((N_steps, n_sims, n_assets))
     
     nu, gamma = 5, 1.3 
@@ -54,17 +56,15 @@ def generar_simulacion_diaria(mu_h, cov_h, n_sims, dist_type):
             Z_raw = np.where(Y >= 0, Y / gamma, Y * gamma)
             z = (Z_raw - Z_raw.mean(axis=1, keepdims=True)) / Z_raw.std(axis=1, keepdims=True)
         
-        # Shock correlacionado
         shock = L @ z
-        # Retorno del día t (logarítmico)
+        # Guardamos el retorno de este paso (día t)
         retornos_diarios_sim[t] = drift_diario[:, None] + shock 
         
-    # Calculamos métricas promediando los retornos diarios de la simulación
-    # Promedio diario -> Anualizado
+    # MÉTRICAS ANUALIZADAS BASADAS EN EL PROCESO DIARIO
+    # Promedio de todos los retornos diarios de todas las sims -> Anualizado
     mu_sim = retornos_diarios_sim.mean(axis=(0, 1)) * 252
     
-    # Covarianza de los retornos diarios -> Anualizada
-    # Primero colapsamos a (Pasos*Sims, Activos) para calcular la covarianza real del proceso
+    # Covarianza de los retornos diarios simulados -> Anualizada
     reshaped_rets = retornos_diarios_sim.reshape(-1, n_assets)
     cov_sim = np.cov(reshaped_rets, rowvar=False) * 252
     
@@ -89,11 +89,12 @@ def optimizar_portfolio(mu_sim, cov_sim, ret_diarios_sim, rf_rate, asset_names, 
     
     ret_p, vol_p, _ = ef.portfolio_performance(risk_free_rate=rf_rate)
     
-    # El VaR se calcula sobre el retorno acumulado final de las simulaciones
+    # VaR 95%: Se calcula sobre el retorno acumulado final del portfolio en cada simulación
     pesos_arr = np.array(list(weights.values()))
-    # Retorno acumulado por simulación: sumamos los logs diarios y aplicamos exp
-    ret_acum_sim = np.exp(ret_diarios_sim.sum(axis=0) @ pesos_arr) - 1
-    vaR_pct = np.percentile(ret_acum_sim, 5)
+    # Sumamos los logs diarios para obtener el log-return total de la simulación
+    ret_log_acum = ret_diarios_sim.sum(axis=0) @ pesos_arr
+    ret_final_pct = np.exp(ret_log_acum) - 1
+    vaR_pct = np.percentile(ret_final_pct, 5)
     
     return {
         "pesos": weights, "retorno_esperado": ret_p, "volatilidad_esperada": vol_p, 
@@ -101,56 +102,8 @@ def optimizar_portfolio(mu_sim, cov_sim, ret_diarios_sim, rf_rate, asset_names, 
         "resultado_monetario_peor_caso": capital * vaR_pct,
         "capital_final_peor_caso": capital * (1 + vaR_pct),
         "capital_potencial": capital * (1 + ret_p),
-        "ret_acum_sim": ret_acum_sim
+        "ret_final_pct": ret_final_pct
     }
-
-# --- 4. INTERFAZ ---
-# [Aquí va el mismo código de sidebar y descarga de datos que ya teníamos]
-if st.button("Simular y Analizar"):
-    with st.spinner("Simulando día por día..."):
-        rf = obtener_risk_free_live()
-        raw_data = yf.download(tickers, start=f_inicio, end=f_fin)
-        
-        if isinstance(raw_data.columns, pd.MultiIndex):
-            data = raw_data['Adj Close'] if 'Adj Close' in raw_data.columns.levels[0] else raw_data['Close']
-        else:
-            data = raw_data
-            
-        data = data.ffill().dropna()
-        log_returns = np.log(data / data.shift(1))
-        
-        mu_h = log_returns.mean() * 252
-        cov_h_clean = risk_models.covariances.ledoit_wolf(data)
-        
-        final_tickers = data.columns.tolist()
-
-        # Simulación Día a Día
-        mu_sim, cov_sim, rets_diarios = generar_simulacion_diaria(mu_h.values, cov_h_clean.values, n_simulaciones, dist_modelo)
-        
-        # Optimización
-        res = optimizar_portfolio(mu_sim, cov_sim, rets_diarios, rf, final_tickers, obj_input, 0.05 if restr_w else None, cap_inicial)
-
-        if res:
-            st.success("✅ Simulación Paso a Paso Completa")
-            
-            # FILA 1: MÉTRICAS GENERALES
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Retorno Esperado", f"{res['retorno_esperado']:.2%}")
-            m2.metric("Volatilidad Anual", f"{res['volatilidad_esperada']:.2%}")
-            m3.metric("Ratio de Sharpe", f"{(res['retorno_esperado']-rf)/res['volatilidad_esperada']:.2f}")
-            m4.metric("VaR 95% (Anual)", f"{res['vaR_pct']:.2%}")
-
-            # FILA 2: AUDITORÍA INDIVIDUAL
-            st.subheader("🎯 Eficiencia Individual Simulada")
-            vols_sim_ind = np.sqrt(np.diag(cov_sim))
-            df_ind = pd.DataFrame({
-                "Retorno Anual": mu_sim * 100,
-                "Volatilidad Anual": vols_sim_ind * 100,
-                "Sharpe": (mu_sim - rf) / vols_sim_ind
-            }, index=final_tickers)
-            st.table(df_ind.sort_values(by="Retorno Anual", ascending=False).style.format("{:.2f}"))
-            
-            # [Aquí siguen los gráficos de frontera y tenencias que ya conoces]
 
 # --- 4. INTERFAZ ---
 st.title("🚀 financial_wealth: Portfolio Intelligence")
@@ -169,55 +122,56 @@ with st.sidebar:
     restr_w = st.checkbox("Mínimo 5% por activo", value=True)
 
 if st.button("Simular y Analizar"):
-    with st.spinner("Calculando y Limpiando Matrices..."):
+    with st.spinner("Ejecutando simulación diaria y optimizando..."):
         rf = obtener_risk_free_live()
-        raw_data = yf.download(tickers, start=f_inicio, end=f_fin)
         
+        # Descarga y limpieza
+        raw_data = yf.download(tickers, start=f_inicio, end=f_fin)
         if isinstance(raw_data.columns, pd.MultiIndex):
             data = raw_data['Adj Close'] if 'Adj Close' in raw_data.columns.levels[0] else raw_data['Close']
         else:
             data = raw_data
-            
+        
         data = data.ffill().dropna()
-        
-        # --- ATAQUE A LA MATRIZ Y RETORNOS ---
-        # Usamos Ledoit-Wolf Shrinkage para que la covarianza sea estable
-        cov_h_clean = risk_models.sample_cov(data, frequency=252) # Matriz anualizada limpia
-        
-        # Retornos logarítmicos individuales
         log_returns = np.log(data / data.shift(1))
-        mu_h = log_returns.mean() * 252
         
-        final_tickers = log_returns.columns.tolist()
+        # Inputs Históricos para la Simulación
+        mu_h = log_returns.mean() * 252
+        # Ataque a la matriz de covarianza con Ledoit-Wolf para estabilidad
+        cov_h_clean = risk_models.covariances.ledoit_wolf(data)
+        
+        final_tickers = data.columns.tolist()
 
-        # Simulación y Optimización
-        mu_sim, cov_sim, sims_data = generar_simulacion_profesional(mu_h.values, cov_h_clean.values, n_simulaciones, dist_modelo)
-        res = optimizar_portfolio(mu_sim, cov_sim, sims_data, rf, final_tickers, obj_input, 0.05 if restr_w else None, cap_inicial)
+        # MOTOR: Simulación Día a Día
+        mu_sim, cov_sim, rets_diarios = generar_simulacion_diaria(mu_h.values, cov_h_clean.values, n_simulaciones, dist_modelo)
+        
+        # OPTIMIZADOR: Sobre data simulada paso a paso
+        res = optimizar_portfolio(mu_sim, cov_sim, rets_diarios, rf, final_tickers, obj_input, 0.05 if restr_w else None, cap_inicial)
 
         if res:
-            st.success("✅ Análisis Completo")
+            st.success("✅ Simulación y Optimización Completas")
             
-            # FILA 1: MÉTRICAS
+            # FILA 1: MÉTRICAS GENERALES
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Retorno Esperado", f"{res['retorno_esperado']:.2%}")
             m2.metric("Volatilidad Anual", f"{res['volatilidad_esperada']:.2%}")
             m3.metric("Ratio de Sharpe", f"{(res['retorno_esperado']-rf)/res['volatilidad_esperada']:.2f}")
-            m4.metric("VaR 95% (Simulado)", f"{res['vaR_pct']:.2%}")
+            m4.metric("VaR 95% (Anual)", f"{res['vaR_pct']:.2%}")
 
-            # FILA 2: TABLA DE ACTIVOS (AUDITORÍA)
-            st.subheader("🎯 Métricas Individuales Anualizadas (Post-Simulación)")
+            # FILA 2: AUDITORÍA INDIVIDUAL (PASO A PASO)
+            st.subheader("🎯 Eficiencia Individual Simulada (Basado en retornos diarios)")
             vols_sim_ind = np.sqrt(np.diag(cov_sim))
             df_ind = pd.DataFrame({
                 "Retorno Anual": mu_sim * 100,
                 "Volatilidad Anual": vols_sim_ind * 100,
-                "Sharpe": (mu_sim - rf) / vols_sim_ind
+                "Ratio de Sharpe": (mu_sim - rf) / vols_sim_ind
             }, index=final_tickers)
             st.table(df_ind.sort_values(by="Retorno Anual", ascending=False).style.format("{:.2f}"))
 
             st.divider()
 
-            # GRÁFICO FRONTERA
-            st.subheader("📈 Frontera Eficiente de Markowitz")
+            # FILA 3: FRONTERA EFICIENTE
+            st.subheader("📈 Frontera Eficiente de Markowitz (Datos Simulados)")
             col_fe, col_pie = st.columns([2, 1])
             with col_fe:
                 n_port = 1000
@@ -227,16 +181,41 @@ if st.button("Simular y Analizar"):
                     w /= np.sum(w)
                     p_r.append(np.dot(w, mu_sim))
                     p_v.append(np.sqrt(np.dot(w.T, np.dot(cov_sim, w))))
+                
                 fig_fe, ax_fe = plt.subplots(figsize=(10, 6))
                 scatter = ax_fe.scatter(p_v, p_r, c=(np.array(p_r)/np.array(p_v)), marker='o', s=10, alpha=0.4, cmap='viridis')
+                plt.colorbar(scatter, label='Ratio de Sharpe')
+                
                 for i, t in enumerate(final_tickers):
                     ax_fe.scatter(vols_sim_ind[i], mu_sim[i], color='red', marker='X', s=100)
                     ax_fe.annotate(t, (vols_sim_ind[i], mu_sim[i]), xytext=(5,5), textcoords='offset points', fontweight='bold')
-                ax_fe.scatter(res['volatilidad_esperada'], res['retorno_esperado'], color='gold', marker='*', s=400, edgecolor='black', label="Portfolio Seleccionado")
-                st.pyplot(fig_fe)
+                
+                ax_fe.scatter(res['volatilidad_esperada'], res['retorno_esperado'], color='gold', marker='*', s=400, edgecolor='black', label="Portfolio Óptimo")
+                ax_fe.set_xlabel("Riesgo (Volatilidad Anual)")
+                ax_fe.set_ylabel("Retorno Anual Esperado")
+                ax_fe.legend(); st.pyplot(fig_fe)
 
             with col_pie:
+                st.write("### Composición Visual")
                 fig_pie, ax_pie = plt.subplots()
                 pesos_plot = {k: v for k, v in res['pesos'].items() if v > 0.001}
                 ax_pie.pie(pesos_plot.values(), labels=pesos_plot.keys(), autopct='%1.1f%%', startangle=140, colors=sns.color_palette("viridis", len(pesos_plot)))
                 st.pyplot(fig_pie)
+
+            st.divider()
+
+            # FILA 4: MONETARIAS Y DISTRIBUCIÓN
+            st.subheader(f"💵 Proyección de Capital (${cap_inicial:,.0f})")
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Ganancia Esperada", f"+ ${res['ganancia_esperada_monetaria']:,.2f}")
+            c2.metric("📈 Capital Potencial", f"${res['capital_potencial']:,.2f}")
+            c3.metric("Resultado Neto (VaR)", f"${res['resultado_monetario_peor_caso']:,.2f}")
+            c4.metric("📉 Capital Remanente", f"${res['capital_final_peor_caso']:,.2f}")
+
+            st.write("### Distribución del Portfolio (VaR 95% Simulado)")
+            
+            fig_hist, ax_hist = plt.subplots(figsize=(12, 4))
+            sns.histplot(res['ret_final_pct'] * cap_inicial, kde=True, ax=ax_hist, color="#1E88E5")
+            ax_hist.axvline(res['resultado_monetario_peor_caso'], color='red', linestyle='--', label="VaR 95%")
+            ax_hist.set_title("Resultados Finales del Portfolio en las 2,000 Simulaciones")
+            st.pyplot(fig_hist)
