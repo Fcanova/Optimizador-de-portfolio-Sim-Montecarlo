@@ -7,7 +7,7 @@ import seaborn as sns
 from pypfopt.efficient_frontier import EfficientFrontier
 from scipy.stats import t as t_dist
 
-# --- 1. OBTENCIÓN DE TASA LIBRE DE RIESGO ---
+# --- 1. TASA LIBRE DE RIESGO (LIVE) ---
 def obtener_risk_free_live():
     try:
         tnx = yf.Ticker("^TNX")
@@ -17,7 +17,7 @@ def obtener_risk_free_live():
     except:
         return 0.042
 
-# --- 2. MOTOR DE SIMULACIÓN (MONTE CARLO) ---
+# --- 2. MOTOR DE SIMULACIÓN ---
 def generar_simulacion_profesional(returns_h, n_sims, dist_type):
     n_assets = returns_h.shape[1]
     mu_h = returns_h.mean().values * 252
@@ -52,13 +52,14 @@ def generar_simulacion_profesional(returns_h, n_sims, dist_type):
     final_returns = S[-1] - 1
     mu_sim_annual = (1 + final_returns.mean(axis=0))**(1/T_years) - 1
     
+    # Covarianza de los retornos diarios de la simulación
     rets_daily_sim = S[1:] / S[:-1] - 1
     rets_flat = rets_daily_sim.reshape(-1, n_assets)
     cov_sim_annual = np.cov(rets_flat, rowvar=False) * 252
 
     return mu_sim_annual, cov_sim_annual, final_returns
 
-# --- 3. OPTIMIZADOR CON VaR ABSOLUTO (NETO) ---
+# --- 3. OPTIMIZADOR CON VaR RELATIVO ---
 def optimizar_portfolio(mu_sim, cov_sim, rf_rate, asset_names, objetivo, min_weight):
     mu_s = pd.Series(mu_sim, index=asset_names)
     cov_s = pd.DataFrame(cov_sim, index=asset_names, columns=asset_names)
@@ -79,14 +80,9 @@ def optimizar_portfolio(mu_sim, cov_sim, rf_rate, asset_names, objetivo, min_wei
     
     ret_p, vol_p, sharpe_p = ef.portfolio_performance(risk_free_rate=rf_rate)
     
-    # --- VaR ABSOLUTO: El retorno amortiza la volatilidad ---
+    # --- VaR RELATIVO (Z * Volatilidad) ---
     z_score = 1.645
-    peor_escenario = ret_p - (z_score * vol_p)
-    
-    # Expresamos el riesgo como valor positivo siempre
-    # Si el peor escenario es una pérdida (ej: -0.10), el VaR es 10%.
-    # Si el peor escenario es ganancia (ej: 0.05), el VaR refleja la cercanía al cero.
-    var_95_anual = abs(peor_escenario)
+    var_95_anual = z_score * vol_p 
     
     return {
         "pesos": weights, 
@@ -96,7 +92,7 @@ def optimizar_portfolio(mu_sim, cov_sim, rf_rate, asset_names, objetivo, min_wei
         "var_95": var_95_anual
     }
 
-# --- 4. INTEGRADOR DE LOGICA ---
+# --- 4. INTEGRADOR ---
 def ejecutar_analisis_portfolio(tickers, f_inicio, f_fin, n_simulaciones, distribucion, objetivo, min_weight):
     rf = obtener_risk_free_live()
     df = yf.download(tickers, start=f_inicio, end=f_fin)
@@ -108,53 +104,45 @@ def ejecutar_analisis_portfolio(tickers, f_inicio, f_fin, n_simulaciones, distri
     res = optimizar_portfolio(mu_sim, cov_sim, rf, returns_h.columns.tolist(), objetivo, min_weight)
     return res, rets_f
 
-# --- 5. INTERFAZ STREAMLIT ---
+# --- 5. INTERFAZ ---
 st.set_page_config(page_title="Equity Optimizer Pro", layout="wide")
 st.title("🚀 financial_wealth: Portfolio Intelligence")
 
 with st.sidebar:
     st.header("⚙️ Configuración")
-    tickers_str = st.text_input("Ingresar Tickers", "AAPL, MSFT, NVDA, GGAL, MELI, GLD")
+    tickers_str = st.text_input("Tickers", "AAPL, MSFT, NVDA, GGAL, MELI, GLD")
     tickers = [t.strip().upper() for t in tickers_str.split(",")]
     col1, col2 = st.columns(2)
-    with col1: f_inicio = st.date_input("Fecha Inicio", value=pd.to_datetime("2021-01-01"))
-    with col2: f_fin = st.date_input("Fecha Fin", value=pd.to_datetime("today"))
-    dist_modelo = st.selectbox("Modelo de Probabilidad", ["MBG", "T-Student", "T-Skewed"])
+    with col1: f_inicio = st.date_input("Inicio", value=pd.to_datetime("2021-01-01"))
+    with col2: f_fin = st.date_input("Fin", value=pd.to_datetime("today"))
+    dist_modelo = st.selectbox("Modelo", ["MBG", "T-Student", "T-Skewed"])
     obj_input = st.radio("Objetivo", ["Max Sharpe Ratio", "Min Volatility"])
     restr_w = st.checkbox("Mínimo 5% por activo", value=True)
 
 if st.button("Simular y Optimizar"):
-    with st.spinner("Procesando escenarios de Monte Carlo..."):
+    with st.spinner("Ejecutando simulación de Monte Carlo..."):
         res, sims = ejecutar_analisis_portfolio(tickers, f_inicio, f_fin, 2000, dist_modelo, obj_input, 0.05 if restr_w else None)
         if res:
             st.success("✅ Análisis completado")
-            
-            # Métricas
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Retorno Esperado Anual", f"{res['retorno_esperado']:.2%}")
-            m2.metric("Volatilidad Anual", f"{res['volatilidad_esperada']:.2%}")
+            m1.metric("Retorno Esperado (Anual)", f"{res['retorno_esperado']:.2%}")
+            m2.metric("Volatilidad (Anual)", f"{res['volatilidad_esperada']:.2%}")
             m3.metric("Ratio de Sharpe", f"{res['sharpe_ratio']:.2f}")
-            m4.metric("VaR 95% (Exposición Neta)", f"{res['var_95']:.2%}")
+            m4.metric("VaR 95% (Relativo)", f"{res['var_95']:.2%}", help="Indica cuánto puede caer el retorno respecto al promedio esperado.")
             
-            # Gráficos
             fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
             
-            # Torta
             pesos_plot = {k: v for k, v in res['pesos'].items() if v > 0.001}
             ax1.pie(pesos_plot.values(), labels=pesos_plot.keys(), autopct='%1.1f%%', startangle=140, colors=sns.color_palette("viridis", len(pesos_plot)))
-            ax1.set_title("Distribución Óptima del Portfolio")
+            ax1.set_title("Composición Óptima")
             
-            # Histograma
             pesos_arr = np.array(list(res['pesos'].values()))
             port_rets = sims @ pesos_arr
             sns.histplot(port_rets, kde=True, ax=ax2, color="#2E86C1")
-            ax2.axvline(np.percentile(port_rets, 5), color='red', linestyle='--', label="Límite VaR 5%")
-            ax2.set_title("Distribución de Retornos Simulados")
+            ax2.axvline(np.percentile(port_rets, 5), color='red', linestyle='--', label="Peor escenario (5%)")
+            ax2.set_title("Distribución de Escenarios")
             ax2.legend()
             st.pyplot(fig)
             
-            # Tabla de pesos
-            st.subheader("📋 Ponderación por Activo")
+            st.subheader("📋 Ponderación Detallada")
             st.table(pd.DataFrame.from_dict(res['pesos'], orient='index', columns=['%']).multiply(100).round(2))
-            
-            st.info("💡 **Nota:** El VaR de Exposición Neta considera cómo el retorno esperado amortiza la volatilidad potencial de la cartera.")
