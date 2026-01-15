@@ -111,40 +111,38 @@ if st.button("Simular y Analizar"):
             # FILA 1: MÉTRICAS PORCENTUALES
             st.subheader("📊 Métricas de Eficiencia (Anualizadas)")
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Retorno Esperado", f"{res['retorno_esperado']:.2%}")
-            m2.metric("Volatilidad Anual", f"{res['volatilidad_esperada']:.2%}")
-            m3.metric("Ratio de Sharpe", f"{res['sharpe_ratio']:.2f}")
-            m4.metric("VaR 95% Confianza", f"{res['peor_resultado_pct']:.2%}")
+            m1.metric("Retorno Esperado", f"{res['retorno_esperado']:.2%}", help="Promedio ponderado de los retornos anuales esperados.")
+            m2.metric("Volatilidad Anual", f"{res['volatilidad_esperada']:.2%}", help="Desviación estándar de los retornos.")
+            m3.metric("Ratio de Sharpe", f"{res['sharpe_ratio']:.2f}", help="Exceso de retorno por unidad de riesgo.")
+            m4.metric("VaR 95% Confianza", f"{res['peor_resultado_pct']:.2%}", help="Con un 95% de prob. perderías de manera estimada, como máximo esto.")
 
-            # FILA 2: MÉTRICAS MONETARIAS CON REFUERZO VISUAL
+            # FILA 2: MÉTRICAS MONETARIAS
             st.subheader(f"💵 Proyección de Capital (${cap_inicial:,.0f})", help="Medidas esperadas y anuales")
             c1, c2, c3, c4 = st.columns(4)
             
-            # Ganancia Esperada
-            c1.metric("Ganancia Esperada", f"+ ${res['ganancia_esperada_monetaria']:,.2f}")
+            c1.metric("Ganancia Esperada", f"+ ${res['ganancia_esperada_monetaria']:,.2f}", help="Resultado monetario estimado en escenario promedio.")
             
-            # Capital Potencial (VERDE + TENDENCIA ALCISTA)
-            # Usamos delta positivo para forzar el color verde
+            # Capital Potencial (VERDE)
             c2.metric("📈 Capital Potencial", f"${res['capital_potencial']:,.2f}", 
-                      delta=f"+{res['retorno_esperado']:.1%} Est.", delta_color="normal",
+                      delta=f"+{res['retorno_esperado']:.1%}", delta_color="normal",
                       help="Capital potencial en caso de concretar el retorno esperado anual")
             
-            # Resultado Neto Peor Caso
+            # Resultado Neto Peor Caso (RESTAURADO EL HELP)
             color_delta = "inverse" if res['resultado_monetario_peor_caso'] < 0 else "normal"
             c3.metric("Resultado Neto Peor Caso", f"${res['resultado_monetario_peor_caso']:,.2f}", 
-                      delta=f"{res['peor_resultado_pct']:.1%} VaR", delta_color=color_delta)
+                      delta=f"{res['peor_resultado_pct']:.1%} VaR", delta_color=color_delta,
+                      help="Monto en dólares que representa el peor escenario proyectado al 95% de confianza.")
             
-            # Capital Remanente (ROJO + TENDENCIA BAJISTA)
-            # Forzamos delta negativo para color rojo si hay pérdida proyectada
+            # Capital Remanente (ROJO)
             diff_remanente = res['capital_final_peor_caso'] - cap_inicial
             c4.metric("📉 Capital Remanente", f"${res['capital_final_peor_caso']:,.2f}", 
-                      delta=f"${diff_remanente:,.2f}" if diff_remanente < 0 else "Sin pérdida de capital", 
+                      delta=f"${diff_remanente:,.2f}" if diff_remanente < 0 else "Mínima variación", 
                       delta_color="inverse",
                       help="Capital remanente en caso de que se haga la pérdida máxima esperada con un 95% de prob.")
 
             st.divider()
-
-            # (Sigue el resto de los gráficos igual que la base anterior...)
+            
+            # --- SECCIÓN DE GRÁFICOS ---
             col_g1, col_g2 = st.columns([2, 1])
             with col_g1:
                 st.write("### Frontera Eficiente de Markowitz")
@@ -187,3 +185,21 @@ if st.button("Simular y Analizar"):
                 pesos_plot = {k: v for k, v in res['pesos'].items() if v > 0.001}
                 ax_pie.pie(pesos_plot.values(), labels=pesos_plot.keys(), autopct='%1.1f%%', startangle=140, colors=sns.color_palette("viridis", len(pesos_plot)))
                 st.pyplot(fig_pie)
+
+            # FILA 4: BARRAS Y DISTRIBUCIÓN
+            col_b1, col_b2 = st.columns(2)
+            with col_b1:
+                st.write("### Potencial: Éxito vs Riesgo")
+                fig_bar, ax_bar = plt.subplots()
+                ax_bar.bar(['Ganancia Esp.', 'Peor Caso'], [res['ganancia_esperada_monetaria'], res['resultado_monetario_peor_caso']], color=['#2ECC71', '#E74C3C'])
+                ax_bar.axhline(0, color='black', linewidth=0.8)
+                st.pyplot(fig_bar)
+            
+            with col_b2:
+                st.write("### Distribución de Resultados Monetarios")
+                fig_hist, ax_hist = plt.subplots()
+                pesos_arr = np.array(list(res['pesos'].values()))
+                rets_monetarios = (sims @ pesos_arr) * cap_inicial
+                sns.histplot(rets_monetarios, kde=True, ax=ax_hist, color="#3498DB")
+                ax_hist.axvline(res['resultado_monetario_peor_caso'], color='red', linestyle='--', label="VaR")
+                st.pyplot(fig_hist)
