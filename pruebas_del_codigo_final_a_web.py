@@ -27,21 +27,26 @@ def obtener_risk_free_live():
     except:
         return 0.042
 
-# --- 2. MOTOR DE SIMULACIÓN (AZAR LIBERADO) ---
+# --- 2. MOTOR DE SIMULACIÓN (MBG CORREGIDO) ---
 def generar_simulacion_profesional(returns_h, n_sims, dist_type):
-    # Sin semilla fija para que los números se actualicen en cada simulación
+    # Sin semilla fija para permitir actualización dinámica
     n_assets = returns_h.shape[1]
-    mu_daily = returns_h.mean().values
-    sigma_daily = returns_h.cov().values
     
+    # Datos diarios base
+    mu_daily = returns_h.mean().values
+    cov_daily = returns_h.cov().values
+    
+    # Anualización estándar
     mu_annual = mu_daily * 252
-    sigma_annual = sigma_daily * 252 
+    sigma_annual = cov_daily * 252 
     
     N_steps = 252
     dt = 1 / 252
     
     L = np.linalg.cholesky(sigma_annual + 1e-10 * np.eye(n_assets))
+    # El drift del MBG: (mu - 0.5 * sigma^2)
     drift = (mu_annual - 0.5 * np.diag(sigma_annual)) * dt
+    
     S = np.ones((N_steps + 1, n_sims, n_assets))
     
     nu, gamma = 5, 1.3
@@ -56,8 +61,9 @@ def generar_simulacion_profesional(returns_h, n_sims, dist_type):
             Z_raw = np.where(Y >= 0, Y / gamma, Y * gamma)
             z = (Z_raw - Z_raw.mean(axis=1, keepdims=True)) / Z_raw.std(axis=1, keepdims=True)
         
-        corr_shock = L @ z
-        incr = drift[:, None] + corr_shock * np.sqrt(dt)
+        # Correlación y escala temporal
+        shock = L @ z
+        incr = drift[:, None] + shock * np.sqrt(dt)
         S[t] = S[t-1] * np.exp(incr.T)
         
     final_returns = S[-1] - 1
@@ -157,7 +163,7 @@ if st.button("Simular y Analizar"):
 
             st.divider()
 
-            # FILA 3: FRONTERA CON LÍNEA EFICIENTE
+            # FILA 3: FRONTERA CON LÍNEA
             col_g1, col_g2 = st.columns([2, 1])
             with col_g1:
                 st.write("### Frontera Eficiente de Markowitz")
@@ -168,8 +174,8 @@ if st.button("Simular y Analizar"):
                     p_r.append(np.dot(w, mu_sim))
                     p_v.append(np.sqrt(np.dot(w.T, np.dot(cov_sim, w))))
                 
-                # CÁLCULO DE LA LÍNEA DE LA FRONTERA
-                target_rets = np.linspace(min(mu_sim), max(mu_sim), 25)
+                # CÁLCULO DE LA LÍNEA
+                target_rets = np.linspace(min(mu_sim), max(mu_sim), 30)
                 frontier_v = []
                 for r in target_rets:
                     ef_line = EfficientFrontier(pd.Series(mu_sim, index=tickers), pd.DataFrame(cov_sim, index=tickers, columns=tickers))
@@ -181,7 +187,6 @@ if st.button("Simular y Analizar"):
                 fig_fe, ax_fe = plt.subplots(figsize=(10, 6))
                 ax_fe.scatter(p_v, p_r, c=(np.array(p_r)/np.array(p_v)), marker='o', s=5, alpha=0.3, cmap='viridis')
                 
-                # Dibujar la línea punteada
                 valid_v = [v for v in frontier_v if v is not None]
                 valid_r = [r for v, r in zip(frontier_v, target_rets) if v is not None]
                 ax_fe.plot(valid_v, valid_r, color='black', linestyle='--', linewidth=1.5, label="Frontera Eficiente")
@@ -194,7 +199,6 @@ if st.button("Simular y Analizar"):
                 ax_fe.scatter(res['volatilidad_esperada'], res['retorno_esperado'], color='gold', marker='*', s=300, edgecolor='black', label="Tu Portfolio")
                 ax_fe.legend()
                 st.pyplot(fig_fe)
-                
 
             with col_g2:
                 st.write("### Composición Visual")
@@ -203,7 +207,7 @@ if st.button("Simular y Analizar"):
                 ax_pie.pie(pesos_plot.values(), labels=pesos_plot.keys(), autopct='%1.1f%%', startangle=140, colors=sns.color_palette("viridis", len(pesos_plot)))
                 st.pyplot(fig_pie)
 
-            # FILA 4: BARRAS E HISTOGRAMA
+            # FILA 4: BARRAS E HISTOGRAMA (DONDE SE VE EL MBG)
             col_b1, col_b2 = st.columns(2)
             with col_b1:
                 st.write("### Potencial: Esperado vs Peor Caso")
@@ -213,7 +217,8 @@ if st.button("Simular y Analizar"):
                 st.pyplot(fig_bar)
             
             with col_b2:
-                st.write("### Distribución de Probabilidades")
+                st.write("### Distribución de Resultados")
+                
                 fig_hist, ax_hist = plt.subplots()
                 pesos_arr = np.array(list(res['pesos'].values()))
                 rets_monetarios = (sims @ pesos_arr) * cap_inicial
