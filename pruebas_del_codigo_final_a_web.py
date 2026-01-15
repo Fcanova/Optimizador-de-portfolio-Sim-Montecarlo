@@ -143,7 +143,7 @@ if st.button("Simular y Analizar"):
                       help="Monto en dólares que representa el peor escenario proyectado al 95% de confianza.")
             
             c3.metric("Capital Remanente", f"${res['capital_final_peor_caso']:,.2f}", 
-                      help="Capital remanente en caso de que se haga la pérdida máxima esperada con un 95% de probabilidad.")
+                      help="Capital remanente en caso de que se efectivice la pérdida máxima esperada con un 95% de probabilidad.")
 
             # FILA 3: GRÁFICOS
             st.divider()
