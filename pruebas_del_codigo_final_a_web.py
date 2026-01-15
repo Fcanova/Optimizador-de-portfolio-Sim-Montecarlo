@@ -26,25 +26,17 @@ def obtener_risk_free_live():
     except:
         return 0.042
 
-# --- 2. MOTOR DE SIMULACIÓN (ESTRICTO MBG / LOG-NORMAL) ---
+# --- 2. MOTOR DE SIMULACIÓN (MBG / LOG-NORMAL FIEL AL TIF) ---
 def generar_simulacion_profesional(returns_h, n_sims, dist_type):
-    # No usamos semilla para que actualice siempre
     n_assets = returns_h.shape[1]
-    
-    # Parámetros anualizados desde los datos diarios
     mu_annual = returns_h.mean().values * 252
     sigma_annual = returns_h.cov().values * 252
     
-    N_steps = 252 # Un año bursátil
+    N_steps = 252 
     dt = 1 / 252
     
-    # Cholesky para mantener correlaciones
     L = np.linalg.cholesky(sigma_annual + 1e-10 * np.eye(n_assets))
-    
-    # Matriz de precios iniciales (Normalizados a 1)
     S = np.ones((N_steps + 1, n_sims, n_assets))
-    
-    # Drift ajustado por convexidad: (mu - 0.5 * sigma^2)
     drift = (mu_annual - 0.5 * np.diag(sigma_annual)) * dt
     
     nu, gamma = 5, 1.3
@@ -59,13 +51,10 @@ def generar_simulacion_profesional(returns_h, n_sims, dist_type):
             Z_raw = np.where(Y >= 0, Y / gamma, Y * gamma)
             z = (Z_raw - Z_raw.mean(axis=1, keepdims=True)) / Z_raw.std(axis=1, keepdims=True)
         
-        # Shock correlacionado
         shock = L @ z
-        # Evolución exponencial (Esencia del MBG)
         incr = drift[:, None] + shock * np.sqrt(dt)
         S[t] = S[t-1] * np.exp(incr.T)
     
-    # Retornos finales del periodo (Precio final - 1)
     final_returns = S[-1] - 1
     mu_sim = final_returns.mean(axis=0)
     cov_sim = np.cov(final_returns, rowvar=False)
@@ -91,7 +80,7 @@ def optimizar_portfolio(mu_sim, cov_sim, rf_rate, asset_names, objetivo, min_wei
     
     ret_p, vol_p, _ = ef.portfolio_performance(risk_free_rate=rf_rate)
     
-    # VaR 95% basado en la simulación
+    # VaR 95% Paramétrico Anualizado
     z_score = 1.645
     vaR_pct = ret_p - (z_score * vol_p)
     
@@ -101,7 +90,7 @@ def optimizar_portfolio(mu_sim, cov_sim, rf_rate, asset_names, objetivo, min_wei
         "volatilidad_esperada": vol_p, 
         "vaR_pct": vaR_pct,
         "ganancia_esperada_monetaria": ret_p * capital,
-        "resultado_neto_peor_caso": capital * vaR_pct,
+        "resultado_monetario_peor_caso": capital * vaR_pct,
         "capital_final_peor_caso": capital * (1 + vaR_pct),
         "capital_potencial": capital * (1 + ret_p)
     }
@@ -122,7 +111,7 @@ with st.sidebar:
     restr_w = st.checkbox("Mínimo 5% por activo", value=True)
 
 if st.button("Simular y Analizar"):
-    with st.spinner("Ejecutando simulación de trayectoria..."):
+    with st.spinner("Simulando trayectorias..."):
         rf = obtener_risk_free_live()
         df = yf.download(tickers, start=f_inicio, end=f_fin)
         data = df['Adj Close'] if 'Adj Close' in df.columns else df['Close']
@@ -134,18 +123,22 @@ if st.button("Simular y Analizar"):
         if res:
             st.success("✅ Análisis Completo")
             
+            # FILA 1: MÉTRICAS
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Retorno Esperado", f"{res['retorno_esperado']:.2%}")
             m2.metric("Volatilidad Anual", f"{res['volatilidad_esperada']:.2%}")
             m3.metric("Ratio de Sharpe", f"{(res['retorno_esperado']-rf)/res['volatilidad_esperada']:.2f}")
-            m4.metric("VaR 95% Confianza", f"{res['vaR_pct']:.2%}", help="Peor escenario neto anual estimado.")
+            m4.metric("VaR 95% Confianza", f"{res['vaR_pct']:.2%}")
 
+            # FILA 2: MONETARIAS
             st.subheader(f"💵 Proyección de Capital (${cap_inicial:,.0f})")
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Ganancia Esperada", f"+ ${res['ganancia_esperada_monetaria']:,.2f}")
             c2.metric("📈 Capital Potencial", f"${res['capital_potencial']:,.2f}", delta=f"+{res['retorno_esperado']:.1%}")
-            c3.metric("Resultado Neto (VaR)", f"${res['resultado_neto_peor_caso']:,.2f}")
-            c4.metric("📉 Capital Remanente", f"${res['capital_final_peor_caso']:,.2f}", delta=f"${res['capital_final_peor_caso']-cap_inicial:,.2f}", delta_color="inverse")
+            c3.metric("Resultado Neto (VaR)", f"${res['resultado_monetario_peor_caso']:,.2f}")
+            
+            diff = res['capital_final_peor_caso'] - cap_inicial
+            c4.metric("📉 Capital Remanente", f"${res['capital_final_peor_caso']:,.2f}", delta=f"${diff:,.2f}", delta_color="inverse")
 
             st.divider()
             
@@ -158,7 +151,7 @@ if st.button("Simular y Analizar"):
 
             st.divider()
 
-            # --- GRÁFICOS RESTAURADOS ---
+            # FILA 3: FRONTERA Y PIE
             col_g1, col_g2 = st.columns([2, 1])
             with col_g1:
                 st.write("### Frontera Eficiente de Markowitz")
@@ -169,7 +162,6 @@ if st.button("Simular y Analizar"):
                     p_r.append(np.dot(w, mu_sim))
                     p_v.append(np.sqrt(np.dot(w.T, np.dot(cov_sim, w))))
                 
-                # Línea de frontera
                 target_rets = np.linspace(min(mu_sim), max(mu_sim), 25)
                 frontier_v = []
                 for r in target_rets:
@@ -181,15 +173,13 @@ if st.button("Simular y Analizar"):
                 
                 fig_fe, ax_fe = plt.subplots(figsize=(10, 6))
                 ax_fe.scatter(p_v, p_r, c=(np.array(p_r)/np.array(p_v)), marker='o', s=5, alpha=0.3, cmap='viridis')
-                valid_v = [v for v in frontier_v if v is not None]
-                valid_r = [r for v, r in zip(frontier_v, target_rets) if v is not None]
-                ax_fe.plot(valid_v, valid_r, color='black', linestyle='--', linewidth=1.5, label="Frontera")
-                
+                valid_v = [v for v in frontier_v if v is not None]; valid_r = [r for v, r in zip(frontier_v, target_rets) if v is not None]
+                ax_fe.plot(valid_v, valid_r, color='black', linestyle='--', linewidth=1.5)
                 v_ind = np.sqrt(np.diag(cov_sim))
                 ax_fe.scatter(v_ind, mu_sim, color='red', marker='X', s=80)
                 for i, t in enumerate(tickers):
                     ax_fe.annotate(t, (v_ind[i], mu_sim[i]), xytext=(5,5), textcoords='offset points', fontweight='bold')
-                ax_fe.scatter(res['volatilidad_esperada'], res['retorno_esperado'], color='gold', marker='*', s=250, edgecolor='black', label="Portfolio")
+                ax_fe.scatter(res['volatilidad_esperada'], res['retorno_esperado'], color='gold', marker='*', s=250, edgecolor='black')
                 st.pyplot(fig_fe)
 
             with col_g2:
@@ -199,20 +189,22 @@ if st.button("Simular y Analizar"):
                 ax_pie.pie(pesos_plot.values(), labels=pesos_plot.keys(), autopct='%1.1f%%', startangle=140)
                 st.pyplot(fig_pie)
 
+            # FILA 4: BARRAS E HISTOGRAMA (LOG-NORMAL)
             col_b1, col_b2 = st.columns(2)
             with col_b1:
-                st.write("### Esperado vs Peor Caso")
+                st.write("### Potencial: Esperado vs VaR")
                 fig_bar, ax_bar = plt.subplots()
-                ax_bar.bar(['Esperado', 'VaR 95%'], [res['ganancia_esperada_monetaria'], res['resultado_neto_peor_caso']], color=['green', 'red'])
+                ax_bar.bar(['Ganancia Esp.', 'Resultado VaR'], [res['ganancia_esperada_monetaria'], res['resultado_monetario_peor_caso']], color=['#2ECC71', '#E74C3C'])
                 ax_bar.axhline(0, color='black', linewidth=0.8)
                 st.pyplot(fig_bar)
             
             with col_b2:
-                st.write("### Distribución (Esencia MBG)")
+                st.write("### Distribución de Resultados (Esencia MBG)")
                 
                 fig_hist, ax_hist = plt.subplots()
                 pesos_arr = np.array(list(res['pesos'].values()))
                 rets_monetarios = (sims @ pesos_arr) * cap_inicial
                 sns.histplot(rets_monetarios, kde=True, ax=ax_hist, color="skyblue")
+                # ACÁ ESTÁ EL CAMBIO: El nombre de la clave matchea con el diccionario
                 ax_hist.axvline(res['resultado_monetario_peor_caso'], color='red', linestyle='--', label="VaR")
                 st.pyplot(fig_hist)
