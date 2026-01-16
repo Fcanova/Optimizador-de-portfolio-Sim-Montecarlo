@@ -29,23 +29,22 @@ def obtener_risk_free_live():
     except:
         return 0.042
 
-# --- 2. MOTOR DE SIMULACIÓN DIARIA (PASOS 1, 2 Y 3) ---
+# --- 2. MOTOR DE SIMULACIÓN DIARIA (PASOS 1, 2 Y 3 DEL TIF) ---
 def generar_simulacion_diaria(mu_h_anual, cov_h_anual, n_sims, dist_type):
     n_assets = len(mu_h_anual)
-    N_steps = 252 # 1 año bursátil
+    N_steps = 252 
     
-    # Parámetros diarios para el input
+    # Parámetros diarios (Inputs Paso 1)
     mu_d = mu_h_anual / 252
     cov_d = cov_h_anual / 252
     sigmas_d = np.sqrt(np.diag(cov_d))
     
     # Cholesky para correlación
-    L = np.linalg.cholesky(cov_d + 1e-8 * np.eye(n_assets))
+    L = np.linalg.cholesky(cov_d + 1e-12 * np.eye(n_assets))
     
     retornos_diarios_sim = np.zeros((N_steps, n_sims, n_assets))
     
-    # Drift MBG (Hull): mu_log = mu_arit - 0.5 * sigma^2
-    # Como mu_h ya es logarítmico (viene de np.log(P/P-1)), se usa directo
+    # Drift MBG: mu - 0.5 * sigma^2 (Corrección Hull/TIF)
     drift_diario = mu_d - 0.5 * (sigmas_d**2)
     
     nu, gamma = 5, 1.3 
@@ -63,18 +62,18 @@ def generar_simulacion_diaria(mu_h_anual, cov_h_anual, n_sims, dist_type):
         shock = L @ z
         retornos_diarios_sim[t] = drift_diario + shock.T
         
-    # --- PARTE 3: ANUALIZACIÓN DE SIMULADOS ---
-    # Promedio diario de todos los escenarios y días
+    # --- PASO 3: ANUALIZACIÓN Y PROMEDIO ---
+    # Promedio diario de todos los escenarios
     mu_sim_d = retornos_diarios_sim.mean(axis=(0, 1))
     mu_sim_anual = mu_sim_d * 252
     
-    # Desvío diario y matriz de covarianza anualizada
+    # Matriz de covarianza anualizada de los retornos diarios
     reshaped_rets = retornos_diarios_sim.reshape(-1, n_assets)
     cov_sim_anual = np.cov(reshaped_rets, rowvar=False) * 252
     
     return mu_sim_anual, cov_sim_anual, retornos_diarios_sim
 
-# --- 3. OPTIMIZADOR (PARTE 4) ---
+# --- 3. OPTIMIZADOR (PASO 4 DEL TIF) ---
 def optimizar_portfolio(mu_sim, cov_sim, rets_diarios, rf_rate, asset_names, objetivo, min_weight, capital):
     mu_s = pd.Series(mu_sim, index=asset_names)
     cov_s = pd.DataFrame(cov_sim, index=asset_names, columns=asset_names)
@@ -93,22 +92,22 @@ def optimizar_portfolio(mu_sim, cov_sim, rets_diarios, rf_rate, asset_names, obj
     
     ret_p, vol_p, _ = ef.portfolio_performance(risk_free_rate=rf_rate)
     
-    # Wealth Projection
+    # Wealth Projection (Retorno acumulado real exp(sum) - 1)
     pesos_arr = np.array([weights[t] for t in asset_names])
     ret_acum_p = np.exp(rets_diarios.sum(axis=0) @ pesos_arr) - 1
     vaR_pct = np.percentile(ret_acum_p, 5)
-    ret_medio_wealth = ret_acum_p.mean()
+    mu_wealth = ret_acum_p.mean()
     
     return {
         "pesos": weights, "retorno_esperado": ret_p, "volatilidad_esperada": vol_p, 
-        "vaR_pct": vaR_pct, "ganancia_esperada_monetaria": ret_medio_wealth * capital,
+        "vaR_pct": vaR_pct, "ganancia_esperada_monetaria": mu_wealth * capital,
         "resultado_monetario_peor_caso": capital * vaR_pct,
         "capital_final_peor_caso": capital * (1 + vaR_pct),
-        "capital_potencial": capital * (1 + ret_medio_wealth),
+        "capital_potencial": capital * (1 + mu_wealth),
         "ret_acum_p": ret_acum_p
     }
 
-# --- 4. INTERFAZ (RESPETANDO TODA TU ESTRUCTURA) ---
+# --- 4. INTERFAZ (MANTENIENDO TU ESTRUCTURA COMPLETA) ---
 st.title("🚀 financial_wealth: Portfolio Intelligence")
 
 with st.sidebar:
@@ -125,14 +124,15 @@ with st.sidebar:
     restr_w = st.checkbox("Mínimo 5% por activo", value=True)
 
 if st.button("Simular y Analizar"):
-    with st.spinner("Descargando data y ejecutando pasos 1 a 4..."):
+    with st.spinner("Procesando pasos 1 al 4 de la investigación..."):
         rf = obtener_risk_free_live()
         
         # Descarga robusta
         raw_df = yf.download(tickers, start=f_inicio, end=f_fin)
         if raw_df.empty:
-            st.error("No se pudieron descargar datos.")
+            st.error("Error en la descarga. Verifique los Tickers.")
             st.stop()
+            
         if 'Adj Close' in raw_df.columns: data = raw_df['Adj Close']
         elif 'Close' in raw_df.columns: data = raw_df['Close']
         else: data = raw_df.xs('Adj Close', axis=1, level=0) if 'Adj Close' in raw_df.columns.levels[0] else raw_df.xs('Close', axis=1, level=0)
@@ -146,23 +146,24 @@ if st.button("Simular y Analizar"):
         
         final_tickers = data.columns.tolist()
 
-        # EJECUCIÓN MOTOR
+        # EJECUCIÓN MOTOR (PASOS 1, 2 Y 3)
         mu_sim, cov_sim, rets_diarios = generar_simulacion_diaria(mu_h.values, cov_h_clean.values, n_simulaciones, dist_modelo)
+        
+        # OPTIMIZACIÓN (PASO 4)
         res = optimizar_portfolio(mu_sim, cov_sim, rets_diarios, rf, final_tickers, obj_input, 0.05 if restr_w else None, cap_inicial)
 
         if res:
-            st.success("✅ Análisis Completado")
+            st.success("✅ Análisis Basado en TIF Canova-Segura Completado")
             
-            # FILA 1: MÉTRICAS ESPERADAS
-            st.subheader("📊 Métricas Esperadas del Portfolio")
+            # FILA 1: MÉTRICAS
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Retorno Esperado", f"{res['retorno_esperado']:.2%}", help="Promedio de retornos diarios simulados anualizados.")
-            m2.metric("Volatilidad Anual", f"{res['volatilidad_esperada']:.2%}", help="Riesgo basado en el desvío de los retornos diarios.")
+            m1.metric("Retorno Esperado", f"{res['retorno_esperado']:.2%}", help="Promedio anualizado de los retornos diarios simulados.")
+            m2.metric("Volatilidad Anual", f"{res['volatilidad_esperada']:.2%}", help="Desvío estándar anualizado de los retornos diarios.")
             m3.metric("Ratio de Sharpe", f"{(res['retorno_esperado']-rf)/res['volatilidad_esperada']:.2f}")
-            m4.metric("VaR 95% (Anual)", f"{res['vaR_pct']:.2%}", help="Peor escenario en el 95% de los casos.")
+            m4.metric("VaR 95% (Anual)", f"{res['vaR_pct']:.2%}", help="Percentil 5 de los retornos finales acumulados.")
 
             # FILA 2: AUDITORÍA INDIVIDUAL
-            st.subheader("🎯 Eficiencia Individual Simulada")
+            st.subheader("🎯 Eficiencia Individual Simulada (Procedimiento Diario)")
             vols_sim_ind = np.sqrt(np.diag(cov_sim))
             df_ind = pd.DataFrame({
                 "Retorno Anual %": mu_sim * 100,
@@ -213,7 +214,7 @@ if st.button("Simular y Analizar"):
 
             st.divider()
             
-            # FILA 4: TÉRMINOS MONETARIOS
+            # FILA 4: MONETARIAS
             st.subheader(f"💵 Proyección Monetaria (${cap_inicial:,.0f})")
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Ganancia Esperada", f"+ ${res['ganancia_esperada_monetaria']:,.2f}")
