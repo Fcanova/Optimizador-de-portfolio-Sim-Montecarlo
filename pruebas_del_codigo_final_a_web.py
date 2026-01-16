@@ -32,12 +32,12 @@ def obtener_risk_free_live():
 # --- 2. MOTOR DE SIMULACIÓN DIARIA (CON CORRECCIÓN HULL/TIF) ---
 def generar_simulacion_diaria(mu_h, cov_h, n_sims, dist_type):
     n_assets = len(mu_h)
-    N_steps = 252 # 1 AÑO BURSÁTIL
+    N_steps = 252 # 1 Año
     
     # Cholesky sobre cov diaria
     L = np.linalg.cholesky(cov_h/252 + 1e-8 * np.eye(n_assets))
     
-    # Drift diario basado en mu logarítmico histórico
+    # Drift diario (log)
     drift_diario = (mu_h / 252) 
     retornos_diarios_sim = np.zeros((N_steps, n_sims, n_assets))
     
@@ -65,7 +65,7 @@ def generar_simulacion_diaria(mu_h, cov_h, n_sims, dist_type):
 
 # --- 3. OPTIMIZADOR ---
 def optimizar_portfolio(mu_sim, cov_sim, ret_logs_sim, rf_rate, asset_names, objetivo, min_weight, capital):
-    # Corrección Hull: Retorno Aritmético Esperado E[R] para visualización
+    # Corrección Hull para E[R] aritmético
     sigmas_sim = np.sqrt(np.diag(cov_sim))
     mu_aritmetico = np.exp(mu_sim + 0.5 * (sigmas_sim**2)) - 1
     
@@ -112,15 +112,31 @@ with st.sidebar:
     col_a, col_b = st.columns(2)
     with col_a: f_inicio = st.date_input("Inicio", pd.to_datetime("2021-01-01"))
     with col_b: f_fin = st.date_input("Fin", pd.to_datetime("today"))
-    dist_modelo = st.selectbox("Modelo de Distribución", ["MBG", "T-Student", "T-Skewed"])
+    dist_modelo = st.selectbox("Modelo", ["MBG", "T-Student", "T-Skewed"])
     obj_input = st.radio("Objetivo", ["Max Sharpe Ratio", "Min Volatility"])
     restr_w = st.checkbox("Mínimo 5% por activo", value=True)
 
 if st.button("Simular y Analizar"):
-    with st.spinner("Simulando de acá a 1 año..."):
+    with st.spinner("Descargando y Simulando..."):
         rf = obtener_risk_free_live()
-        data = yf.download(tickers, start=f_inicio, end=f_fin)['Adj Close'].ffill().dropna()
-        log_returns = np.log(data / data.shift(1))
+        
+        # FIX ROBUSTO PARA EL KEYERROR DE YFINANCE
+        raw_df = yf.download(tickers, start=f_inicio, end=f_fin)
+        if raw_df.empty:
+            st.error("No se pudieron descargar datos. Revisá los tickers.")
+            st.stop()
+            
+        # Extraer precios de forma segura
+        if 'Adj Close' in raw_df.columns:
+            data = raw_df['Adj Close']
+        elif 'Close' in raw_df.columns:
+            data = raw_df['Close']
+        else:
+            # Caso MultiIndex
+            data = raw_df.xs('Adj Close', axis=1, level=0) if 'Adj Close' in raw_df.columns.levels[0] else raw_df.xs('Close', axis=1, level=0)
+
+        data = data.ffill().dropna()
+        log_returns = np.log(data / data.shift(1)).dropna()
         
         mu_h = log_returns.mean() * 252
         try: cov_h_clean = risk_models.CovarianceShrinkage(data).ledoit_wolf()
@@ -143,13 +159,13 @@ if st.button("Simular y Analizar"):
             df_ind = pd.DataFrame({
                 "Retorno Anual": res['mu_aritmetico'] * 100,
                 "Volatilidad Anual": vols_sim_ind * 100,
-                "Ratio de Sharpe": (res['mu_aritmetico'] - rf) / vols_sim_ind
+                "Sharpe": (res['mu_aritmetico'] - rf) / vols_sim_ind
             }, index=final_tickers)
             st.table(df_ind.sort_values(by="Retorno Anual", ascending=False).style.format("{:.2f}"))
 
             st.divider()
-
-            # FRONTERA EFICIENTE CON LÍNEA
+            
+            # FRONTERA
             st.subheader("📈 Frontera Eficiente de Markowitz")
             col_fe, col_pie = st.columns([2, 1])
             with col_fe:
@@ -170,17 +186,13 @@ if st.button("Simular y Analizar"):
 
                 fig_fe, ax_fe = plt.subplots(figsize=(10, 6))
                 scatter = ax_fe.scatter(p_v, p_r, c=(np.array(p_r)/np.array(p_v)), marker='o', s=10, alpha=0.3, cmap='viridis')
-                plt.colorbar(scatter, label='Ratio de Sharpe')
-                
                 valid_v = [v for v in frontier_v if v is not None]; valid_r = [r for v, r in zip(frontier_v, target_rets) if v is not None]
-                ax_fe.plot(valid_v, valid_r, color='black', linestyle='--', linewidth=2, label='Frontera')
-
+                ax_fe.plot(valid_v, valid_r, color='black', linestyle='--', linewidth=2)
                 for i, t in enumerate(final_tickers):
                     ax_fe.scatter(vols_sim_ind[i], mu_sim[i], color='red', marker='X', s=100)
                     ax_fe.annotate(t, (vols_sim_ind[i], mu_sim[i]), xytext=(5,5), textcoords='offset points', fontweight='bold')
-                
-                ax_fe.scatter(res['volatilidad_esperada'], res['retorno_esperado'], color='gold', marker='*', s=400, edgecolor='black', label="Portfolio Óptimo")
-                ax_fe.set_xlabel("Riesgo (Volatilidad)"); ax_fe.set_ylabel("Retorno"); ax_fe.legend(); st.pyplot(fig_fe)
+                ax_fe.scatter(res['volatilidad_esperada'], res['retorno_esperado'], color='gold', marker='*', s=400, edgecolor='black')
+                st.pyplot(fig_fe)
 
             with col_pie:
                 st.write("### Composición Visual")
@@ -191,7 +203,7 @@ if st.button("Simular y Analizar"):
 
             st.divider()
             
-            # MONETARIAS Y PLAN
+            # PROYECCIÓN MONETARIA
             st.subheader(f"💵 Proyección Monetaria (${cap_inicial:,.0f})")
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Ganancia Esperada", f"+ ${res['ganancia_esperada_monetaria']:,.2f}")
@@ -203,7 +215,7 @@ if st.button("Simular y Analizar"):
             
             col_plan, col_hist = st.columns([1.2, 1])
             with col_plan:
-                st.subheader("📋 Plan de Inversión")
+                st.subheader("📋 Plan de Inversión Sugerido")
                 df_t = pd.DataFrame.from_dict(res['pesos'], orient='index', columns=['Ponderación (%)'])
                 df_t['Ponderación (%)'] = df_t['Ponderación (%)'] * 100
                 df_t['Monto ($)'] = (df_t['Ponderación (%)'] / 100) * cap_inicial
