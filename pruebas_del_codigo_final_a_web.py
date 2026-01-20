@@ -128,7 +128,7 @@ with st.sidebar:
     restr_w = st.checkbox("Mínimo 5% por activo", value=True)
 
 if st.button("Simular y Analizar"):
-    with st.spinner("Validando metodología Canova-Segura..."):
+    with st.spinner("Optimizando tu portfolio de equity..."):
         rf = obtener_risk_free_live()
         raw_df = yf.download(tickers, start=f_inicio, end=f_fin)
         if raw_df.empty: st.stop()
