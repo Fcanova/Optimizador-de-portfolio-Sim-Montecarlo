@@ -108,7 +108,7 @@ def optimizar_portfolio(mu_sim, cov_sim, rets_diarios, rf_rate, asset_names, obj
     }
 
 # --- 4. INTERFAZ (RESTABLECIDA AL 100%) ---
-st.title("🚀 Optimizador de carteras vía simulaciones de Montecarlo")
+st.title("🚀 Optimizador de portfolios: Simulaciones de Montecarlo")
 
 with st.sidebar:
     st.header("⚙️ Parámetros")
