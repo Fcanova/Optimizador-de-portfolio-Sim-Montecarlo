@@ -133,7 +133,7 @@ def optimizar_portfolio(mu_sim, cov_sim, rets_diarios, rf_rate, asset_names, obj
     }
 
 # --- 4. INTERFAZ (RESTABLECIDA A 230+ LÍNEAS) ---
-st.title("🚀 financial_wealth: Portfolio Intelligence")
+st.title("🚀 Optimizador Portfolio: Simulaciones Montecarlo")
 
 with st.sidebar:
     st.header("⚙️ Parámetros")
